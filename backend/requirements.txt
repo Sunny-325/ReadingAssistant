@@ -1,0 +1,43 @@
+# 核心依赖
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.22
+pydantic==2.5.0
+pydantic-settings==2.1.0
+email-validator==2.1.0.post1  # 邮箱验证
+# 数据库
+mysql-connector-python==9.3.0
+pymysql==1.1.1
+sqlalchemy==2.0.23
+cryptography==46.0.5  # MySQL认证所需
+# 工具库
+python-dotenv==1.0.0
+pyyaml==6.0.1
+loguru==0.7.2
+# 文本处理
+jieba==0.42.1
+# 文件处理
+PyPDF2==3.0.1
+python-docx==1.1.0
+beautifulsoup4==4.12.2
+chardet==5.2.0  # 字符编码检测
+# 认证
+passlib==1.7.4
+bcrypt==4.1.2
+python-jose==3.4.0
+# 类型检查
+typing-extensions>=4.12.0
+# 模型依赖
+requests==2.32.4
+openai==1.35.10  # OpenAI客户端库
+dashscope==1.17.0  # 阿里云通义千问SDK
+pyttsx3==2.90  # 文本转语音
+gtts==2.4.0  # Google TTS
+aiohttp==3.9.3
+multidict==6.0.4  # 多字典支持
+pygame==2.5.2  # 音频播放
+# 测试依赖
+pytest==7.4.4
+# 科学计算
+numpy==1.26.3
+scipy==1.11.4

@@ -1,0 +1,45 @@
+# 虚拟环境
+venv/
+.env
+
+# Python 编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 数据库文件
+*.db
+*.sqlite
+
+# 日志文件
+*.log
+
+# 上传文件
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# 前端构建产物
+frontend/dist/
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 测试和缓存
+.pytest_cache/
+.tox/
+.cache/
+
+# 证书和密钥
+*.pem
+*.key
+*.crt
