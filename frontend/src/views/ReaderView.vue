@@ -53,7 +53,6 @@
             letterSpacing: readerSettings.letterSpacing + 'px',
             backgroundColor: readerSettings.backgroundColor,
             color: readerSettings.textColor,
-            wordSpacing: readerSettings.wordSpacing + 'px',
             '--bg-color': readerSettings.backgroundColor,
             '--text-color': readerSettings.textColor
           }"
@@ -110,13 +109,13 @@
             <!-- 字体设置 -->
             <div class="setting-item">
               <label>字体</label>
-              <el-select :value="readerSettings.fontFamily" @input="appStore.updateReaderSettings({ fontFamily: $event })" placeholder="选择字体" size="small">
-                <el-option label="Arial" value="Arial" />
-                <el-option label="微软雅黑" value="Microsoft YaHei" />
-                <el-option label="宋体" value="SimSun" />
-                <el-option label="黑体" value="SimHei" />
-                <el-option label="楷体" value="KaiTi" />
-              </el-select>
+              <select :value="appStore.readerSettings.fontFamily" @change="appStore.updateReaderSettings({ fontFamily: $event.target.value })" class="font-select">
+                <option value="Arial">Arial</option>
+                <option value="Microsoft YaHei">微软雅黑</option>
+                <option value="SimSun">宋体</option>
+                <option value="SimHei">黑体</option>
+                <option value="KaiTi">楷体</option>
+              </select>
             </div>
             
             <!-- 字号设置 -->
@@ -152,14 +151,14 @@
               />
             </div>
             
-            <!-- 词间距设置 -->
+            <!-- 意群间距设置 -->
             <div class="setting-item">
-              <label>词间距: {{ readerSettings.wordSpacing }}px</label>
+              <label>意群间距: {{ readerSettings.wordSpacing }}px</label>
               <el-slider 
                 v-model="readerSettings.wordSpacing" 
-                :min="0" 
-                :max="5" 
-                :step="0.5"
+                :min="50" 
+                :max="120" 
+                :step="1"
               />
             </div>
             
@@ -189,6 +188,7 @@
             <div class="setting-item">
               <label>功能设置</label>
               <el-checkbox v-model="readerSettings.enableMask">蒙版功能</el-checkbox>
+              <el-checkbox v-model="readerSettings.posTagging">词性标注</el-checkbox>
             </div>
             
             <!-- 蒙版设置 -->
@@ -252,9 +252,9 @@
                 'highlighted-segment': currentOriginalSegment === segment.id
               }"
               :style="{
-                marginLeft: readerSettings.typesettingMode === 'staggered' ? (index % 2 === 0 ? '10px' : '20px') : '0',
-                textAlign: readerSettings.typesettingMode === 'staggered' ? ['left', 'center', 'right'][index % 3] : 'left',
-                wordSpacing: readerSettings.typesettingMode === 'staggered' ? '12px' : '0'
+                marginLeft: readerSettings.typesettingMode === 'staggered' ? (index % 2 === 0 ? '0px' : '30px') : '0',
+                textAlign: 'left',
+                marginRight: readerSettings.wordSpacing + 'px'
               }"
               @click="handleSegmentClick(segment)"
             >
@@ -288,9 +288,9 @@
                 'highlighted-segment': currentOriginalSegment === segment.id
               }"
               :style="{
-                marginLeft: readerSettings.typesettingMode === 'staggered' ? (index % 2 === 0 ? '10px' : '20px') : '0',
-                textAlign: readerSettings.typesettingMode === 'staggered' ? ['left', 'center', 'right'][index % 3] : 'left',
-                wordSpacing: readerSettings.typesettingMode === 'staggered' ? '12px' : '0'
+                marginLeft: readerSettings.typesettingMode === 'staggered' ? (index % 2 === 0 ? '0px' : '30px') : '0',
+                textAlign: 'left',
+                marginRight: readerSettings.wordSpacing + 'px'
               }"
               @click="handleSegmentClick(segment)"
             >
@@ -345,7 +345,40 @@
             >
               下一页 <el-icon><ArrowRight /></el-icon>
             </el-button>
+            <el-button 
+              size="small" 
+              @click="openTocDialog('original')"
+            >
+              <el-icon><List /></el-icon> 目录
+            </el-button>
           </div>
+          
+          <!-- 目录对话框 - 用于全屏模式 -->
+          <el-dialog
+            v-model="showTocDialog"
+            title="目录"
+            width="400px"
+            class="toc-dialog"
+          >
+            <div class="toc-container">
+              <div class="toc-header">
+                <span>共 {{ paginationState[currentTocType].totalPages }} 页</span>
+                <span class="toc-progress">{{ Math.round(paginationState[currentTocType].currentPage / paginationState[currentTocType].totalPages * 100) }}%</span>
+              </div>
+              <div class="toc-list">
+                <div 
+                  v-for="page in paginationState[currentTocType].totalPages" 
+                  :key="page"
+                  class="toc-item"
+                  :class="{ 'active': page === paginationState[currentTocType].currentPage }"
+                  @click="jumpToPage(currentTocType, page)"
+                >
+                  <span class="toc-page">第 {{ page }} 页</span>
+                  <span v-if="page === paginationState[currentTocType].currentPage" class="toc-current">当前</span>
+                </div>
+              </div>
+            </div>
+          </el-dialog>
         </div>
       </div>
       
@@ -385,7 +418,6 @@
             letterSpacing: readerSettings.letterSpacing + 'px',
             backgroundColor: readerSettings.backgroundColor,
             color: readerSettings.textColor,
-            wordSpacing: readerSettings.wordSpacing + 'px',
             '--bg-color': readerSettings.backgroundColor,
             '--text-color': readerSettings.textColor
           }"
@@ -442,13 +474,13 @@
             <!-- 字体设置 -->
             <div class="setting-item">
               <label>字体</label>
-              <el-select :value="readerSettings.fontFamily" @input="appStore.updateReaderSettings({ fontFamily: $event })" placeholder="选择字体" size="small">
-                <el-option label="Arial" value="Arial" />
-                <el-option label="微软雅黑" value="Microsoft YaHei" />
-                <el-option label="宋体" value="SimSun" />
-                <el-option label="黑体" value="SimHei" />
-                <el-option label="楷体" value="KaiTi" />
-              </el-select>
+              <select :value="appStore.readerSettings.fontFamily" @change="appStore.updateReaderSettings({ fontFamily: $event.target.value })" class="font-select">
+                <option value="Arial">Arial</option>
+                <option value="Microsoft YaHei">微软雅黑</option>
+                <option value="SimSun">宋体</option>
+                <option value="SimHei">黑体</option>
+                <option value="KaiTi">楷体</option>
+              </select>
             </div>
             
             <!-- 字号设置 -->
@@ -484,14 +516,14 @@
               />
             </div>
             
-            <!-- 词间距设置 -->
+            <!-- 意群间距设置 -->
             <div class="setting-item">
-              <label>词间距: {{ readerSettings.wordSpacing }}px</label>
+              <label>意群间距: {{ readerSettings.wordSpacing }}px</label>
               <el-slider 
                 v-model="readerSettings.wordSpacing" 
-                :min="0" 
-                :max="5" 
-                :step="0.5"
+                :min="50" 
+                :max="120" 
+                :step="1"
               />
             </div>
             
@@ -521,6 +553,7 @@
             <div class="setting-item">
               <label>功能设置</label>
               <el-checkbox v-model="readerSettings.enableMask">蒙版功能</el-checkbox>
+              <el-checkbox v-model="readerSettings.posTagging">词性标注</el-checkbox>
             </div>
             
             <!-- 蒙版设置 -->
@@ -585,9 +618,9 @@
                 'highlighted-segment': currentSimplifiedSegment === segment.id
               }"
               :style="{
-                marginLeft: readerSettings.typesettingMode === 'staggered' ? (index % 2 === 0 ? '10px' : '20px') : '0',
-                textAlign: readerSettings.typesettingMode === 'staggered' ? ['left', 'center', 'right'][index % 3] : 'left',
-                wordSpacing: readerSettings.typesettingMode === 'staggered' ? '12px' : '0'
+                marginLeft: readerSettings.typesettingMode === 'staggered' ? (index % 2 === 0 ? '0px' : '30px') : '0',
+                textAlign: 'left',
+                marginRight: readerSettings.wordSpacing + 'px'
               }"
               @click="handleSegmentClick(segment)"
             >
@@ -621,9 +654,9 @@
                 'highlighted-segment': currentSimplifiedSegment === segment.id
               }"
               :style="{
-                marginLeft: readerSettings.typesettingMode === 'staggered' ? (index % 2 === 0 ? '10px' : '20px') : '0',
-                textAlign: readerSettings.typesettingMode === 'staggered' ? ['left', 'center', 'right'][index % 3] : 'left',
-                wordSpacing: readerSettings.typesettingMode === 'staggered' ? '12px' : '0'
+                marginLeft: readerSettings.typesettingMode === 'staggered' ? (index % 2 === 0 ? '0px' : '30px') : '0',
+                textAlign: 'left',
+                marginRight: readerSettings.wordSpacing + 'px'
               }"
               @click="handleSegmentClick(segment)"
             >
@@ -678,7 +711,40 @@
             >
               下一页 <el-icon><ArrowRight /></el-icon>
             </el-button>
+            <el-button 
+              size="small" 
+              @click="openTocDialog('simplified')"
+            >
+              <el-icon><List /></el-icon> 目录
+            </el-button>
           </div>
+          
+          <!-- 目录对话框 - 用于全屏模式 -->
+          <el-dialog
+            v-model="showTocDialog"
+            title="目录"
+            width="400px"
+            class="toc-dialog"
+          >
+            <div class="toc-container">
+              <div class="toc-header">
+                <span>共 {{ paginationState[currentTocType].totalPages }} 页</span>
+                <span class="toc-progress">{{ Math.round(paginationState[currentTocType].currentPage / paginationState[currentTocType].totalPages * 100) }}%</span>
+              </div>
+              <div class="toc-list">
+                <div 
+                  v-for="page in paginationState[currentTocType].totalPages" 
+                  :key="page"
+                  class="toc-item"
+                  :class="{ 'active': page === paginationState[currentTocType].currentPage }"
+                  @click="jumpToPage(currentTocType, page)"
+                >
+                  <span class="toc-page">第 {{ page }} 页</span>
+                  <span v-if="page === paginationState[currentTocType].currentPage" class="toc-current">当前</span>
+                </div>
+              </div>
+            </div>
+          </el-dialog>
         </div>
       </div>
     </div>
@@ -690,7 +756,11 @@
       direction="rtl"
       size="30%"
     >
-      <div v-if="definitionPanel.word" class="definition-content">
+      <div v-if="definitionPanel.loading" class="loading-content">
+        <el-spinner size="large" />
+        <p>正在搜索，请稍后...</p>
+      </div>
+      <div v-else-if="definitionPanel.word" class="definition-content">
         <h4>{{ definitionPanel.word }}</h4>
         <p v-if="definitionPanel.definition.phonetic" class="phonetic">
           {{ definitionPanel.definition.phonetic }}
@@ -703,7 +773,11 @@
             </li>
           </ul>
         </div>
-        <div v-if="definitionPanel.definition.examples.length > 0" class="examples">
+        <div v-if="definitionPanel.definition.contextual_meaning" class="contextual-meaning">
+          <h5>文中含义：</h5>
+          <p>{{ definitionPanel.definition.contextual_meaning }}</p>
+        </div>
+        <div v-if="definitionPanel.definition.examples && definitionPanel.definition.examples.length > 0" class="examples">
           <h5>例句：</h5>
           <ul>
             <li v-for="(example, index) in definitionPanel.definition.examples" :key="index">
@@ -723,7 +797,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, reactive } from 'vue'
 import { useAppStore } from '../stores/appStore'
 import { getWordDefinition } from '../utils/api'
-import { Microphone, Close, FullScreen, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, VideoPlay, VideoPause } from '@element-plus/icons-vue'
+import { Microphone, Close, FullScreen, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, VideoPlay, VideoPause, List, Loading } from '@element-plus/icons-vue'
 import { pyttsx3, playPyttsx3 } from '../utils/pyttsx3'
 
 const appStore = useAppStore()
@@ -806,6 +880,8 @@ const currentOriginalSegment = ref(null)
 const currentSimplifiedSegment = ref(null)
 
 const showFullScreenSettings = ref(false)
+const showTocDialog = ref(false)
+const currentTocType = ref('original')
 
 // 分页状态 - 使用 ref 包装复杂对象
 const paginationState = reactive({
@@ -909,6 +985,8 @@ const loadPage = async (type, page) => {
   
   if (state.loadedPages.includes(page)) {
     state.currentPage = page
+    // 更新阅读进度
+    updateReadingProgress(type, page)
     return
   }
   
@@ -923,10 +1001,86 @@ const loadPage = async (type, page) => {
     state.totalPages = result.total_pages
     state.currentPage = page
     
+    // 更新阅读进度
+    updateReadingProgress(type, page)
+    
     // 预加载下一页
     if (page < state.totalPages) {
       preloadNextPage(type)
     }
+  }
+}
+
+// 更新阅读进度
+const updateReadingProgress = (type, page) => {
+  const state = paginationState[type]
+  const progress = Math.round((page / state.totalPages) * 100)
+  
+  // 更新对应类型的进度
+  if (type === 'original') {
+    originalProgress.value = progress
+  } else {
+    simplifiedProgress.value = progress
+  }
+  
+  // 更新阅读历史
+  updateReadingHistory(type, page, progress)
+}
+
+// 更新阅读历史记录
+const updateReadingHistory = (type, page, progress) => {
+  if (!currentDocument.value.content) {
+    return
+  }
+  
+  // 找到对应的阅读历史记录
+  const existingHistory = appStore.readingHistory.find(item => 
+    item.document_id === currentDocument.value.id || item.content === currentDocument.value.content
+  )
+  
+  if (existingHistory) {
+    // 更新阅读进度
+    existingHistory.readingProgress = progress
+    // 更新最后阅读时间
+    existingHistory.lastRead = new Date().toISOString().slice(0, 19).replace('T', ' ')
+    // 更新阅读时间（累加）
+    existingHistory.readTime += Math.floor((Date.now() - readingStartTime.value) / 1000)
+    
+    // 保存到本地存储和后端
+    saveReadingHistoryToStorage()
+  }
+}
+
+// 保存阅读历史到存储
+const saveReadingHistoryToStorage = () => {
+  if (appStore.user) {
+    const storageKey = `readingHistory_${appStore.user.id}`
+    localStorage.setItem(storageKey, JSON.stringify(appStore.readingHistory))
+  }
+  localStorage.setItem('readingHistory', JSON.stringify(appStore.readingHistory)) // 兼容旧版本
+}
+
+// 恢复上次阅读位置
+const restoreReadingPosition = () => {
+  if (!currentDocument.value.content) {
+    return
+  }
+  
+  // 找到对应的阅读历史记录
+  const existingHistory = appStore.readingHistory.find(item => 
+    item.document_id === currentDocument.value.id || item.content === currentDocument.value.content
+  )
+  
+  if (existingHistory && existingHistory.readingProgress > 0) {
+    // 根据阅读进度计算页码
+    const progress = existingHistory.readingProgress / 100
+    const totalPages = paginationState.original.totalPages || 1
+    const targetPage = Math.max(1, Math.ceil(progress * totalPages))
+    
+    // 跳转到上次阅读的页面
+    setTimeout(() => {
+      loadPage('original', targetPage)
+    }, 500)
   }
 }
 
@@ -974,6 +1128,18 @@ const goToPage = (type, page) => {
   if (page >= 1 && page <= state.totalPages) {
     loadPage(type, page)
   }
+}
+
+const jumpToPage = (type, page) => {
+  goToPage(type, page)
+  showTocDialog.value = false
+}
+
+const openTocDialog = (type = 'original') => {
+  currentTocType.value = type
+  console.log('目录按钮点击，type:', type, 'showTocDialog:', showTocDialog.value)
+  showTocDialog.value = true
+  console.log('点击后showTocDialog:', showTocDialog.value)
 }
 
 // 初始化分页数据
@@ -1106,10 +1272,14 @@ const handleQueryWord = async () => {
   }
   
   try {
-    const definition = await getWordDefinition(queryWord.value)
+    appStore.setDefinitionLoading(true)
+    // 获取当前文档内容作为上下文
+    const context = currentDocument.value.content || ''
+    const definition = await getWordDefinition(queryWord.value, context)
     appStore.showDefinitionPanel(queryWord.value, definition)
   } catch (error) {
     console.error('获取词语释义失败:', error)
+    appStore.hideDefinitionPanel()
     alert('获取词语释义失败，请稍后重试')
   }
 }
@@ -1202,6 +1372,17 @@ const startOriginalSpeech = async (startFromPosition = null) => {
   
   // 确定从哪个位置开始朗读
   let startPosition = startFromPosition !== null ? startFromPosition : originalSpeechPosition.value
+  
+  // 如果没有指定位置，且当前有页码信息，从当前页面开始
+  if (startFromPosition === null && originalSpeechPosition.value === 0) {
+    const currentPage = paginationState.original.currentPage
+    const pageSize = paginationState.original.pageSize
+    // 计算当前页面的起始字符位置（每页pageSize个意群，每个意群平均约20字符）
+    const estimatedCharsPerSegment = 20
+    startPosition = (currentPage - 1) * pageSize * estimatedCharsPerSegment
+    // 确保不超过文本长度
+    startPosition = Math.min(startPosition, fullText.length - 1)
+  }
   
   // 如果上次朗读已完成，从头开始
   if (startPosition >= fullText.length) {
@@ -1318,13 +1499,64 @@ const stopOriginalSpeech = () => {
 }
 
 const seekOriginalSpeech = (value) => {
-  if (originalAudio.value) {
-    // 计算目标时间
+  const fullText = currentDocument.value.content
+  
+  // 计算目标字符位置
+  const targetPosition = Math.floor((value / 100) * fullText.length)
+  
+  // 更新朗读位置
+  originalSpeechPosition.value = targetPosition
+  
+  // 更新高亮
+  const segment = segments.value.find(s => s.start_pos <= targetPosition && s.end_pos > targetPosition)
+  if (segment) {
+    currentOriginalSegment.value = segment.id
+    
+    // 自动跳转到目标意群所在的页面
+    const pageSize = paginationState.original.pageSize
+    const targetPage = Math.ceil(segment.id / pageSize)
+    
+    // 如果目标页面与当前页面不同，先加载目标页面
+    if (targetPage !== paginationState.original.currentPage) {
+      loadPage('original', targetPage).then(() => {
+        // 页面加载完成后，滚动到目标意群
+        scrollToSegment(segment.id, 'original')
+      })
+    } else {
+      // 已经在目标页面，直接滚动
+      scrollToSegment(segment.id, 'original')
+    }
+  }
+  
+  // 如果正在播放，更新音频位置
+  if (originalAudio.value && isSpeakingOriginal.value) {
     const targetTime = (value / 100) * originalAudio.value.duration
     originalAudio.value.currentTime = targetTime
-    
-    // 更新高亮
-    updateOriginalHighlight()
+  } else if (!isSpeakingOriginal.value) {
+    // 如果没有播放，从当前位置开始播放
+    startOriginalSpeech(targetPosition)
+  }
+}
+
+// 滚动到指定意群
+const scrollToSegment = (segmentId, type = 'original') => {
+  const element = type === 'original' ? originalContentRef.value : simplifiedContentRef.value
+  if (!element) return
+  
+  const targetElement = element.querySelector(`[data-segment-id="${segmentId}"]`)
+  if (!targetElement) return
+  
+  // 判断是否在蒙版模式下
+  const isMaskEnabled = type === 'original' 
+    ? (isOriginalFullScreen.value && readerSettings.value.enableMask)
+    : (isSimplifiedFullScreen.value && readerSettings.value.enableMask)
+  
+  if (isMaskEnabled) {
+    // 蒙版模式：滚动到中央可见区域
+    scrollToElement(element, targetElement, type)
+  } else {
+    // 普通模式：滚动到元素可见
+    targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 }
 
@@ -1340,6 +1572,17 @@ const startSimplifiedSpeech = async (startFromPosition = null) => {
   
   // 确定从哪个位置开始朗读
   let startPosition = startFromPosition !== null ? startFromPosition : simplifiedSpeechPosition.value
+  
+  // 如果没有指定位置，且当前有页码信息，从当前页面开始
+  if (startFromPosition === null && simplifiedSpeechPosition.value === 0) {
+    const currentPage = paginationState.simplified.currentPage
+    const pageSize = paginationState.simplified.pageSize
+    // 计算当前页面的起始字符位置（每页pageSize个意群，每个意群平均约20字符）
+    const estimatedCharsPerSegment = 20
+    startPosition = (currentPage - 1) * pageSize * estimatedCharsPerSegment
+    // 确保不超过文本长度
+    startPosition = Math.min(startPosition, fullText.length - 1)
+  }
   
   // 如果上次朗读已完成，从头开始
   if (startPosition >= fullText.length) {
@@ -1456,13 +1699,42 @@ const stopSimplifiedSpeech = () => {
 }
 
 const seekSimplifiedSpeech = (value) => {
-  if (simplifiedAudio.value) {
-    // 计算目标时间
+  const fullText = currentDocument.value.simplifiedContent
+  
+  // 计算目标字符位置
+  const targetPosition = Math.floor((value / 100) * fullText.length)
+  
+  // 更新朗读位置
+  simplifiedSpeechPosition.value = targetPosition
+  
+  // 更新高亮
+  const segment = simplifiedSegments.value.find(s => s.start_pos <= targetPosition && s.end_pos > targetPosition)
+  if (segment) {
+    currentSimplifiedSegment.value = segment.id
+    
+    // 自动跳转到目标意群所在的页面
+    const pageSize = paginationState.simplified.pageSize
+    const targetPage = Math.ceil(segment.id / pageSize)
+    
+    // 如果目标页面与当前页面不同，先加载目标页面
+    if (targetPage !== paginationState.simplified.currentPage) {
+      loadPage('simplified', targetPage).then(() => {
+        // 页面加载完成后，滚动到目标意群
+        scrollToSegment(segment.id, 'simplified')
+      })
+    } else {
+      // 已经在目标页面，直接滚动
+      scrollToSegment(segment.id, 'simplified')
+    }
+  }
+  
+  // 如果正在播放，更新音频位置
+  if (simplifiedAudio.value && isSpeakingSimplified.value) {
     const targetTime = (value / 100) * simplifiedAudio.value.duration
     simplifiedAudio.value.currentTime = targetTime
-    
-    // 更新高亮
-    updateSimplifiedHighlight()
+  } else if (!isSpeakingSimplified.value) {
+    // 如果没有播放，从当前位置开始播放
+    startSimplifiedSpeech(targetPosition)
   }
 }
 
@@ -1734,9 +2006,6 @@ const autoScrollToHighlightedSegment = (segmentId, type = 'original') => {
   const computedStyle = getComputedStyle(element)
   const paddingTop = parseFloat(computedStyle.paddingTop) || 0
   
-  const containerScrollTop = element.scrollTop
-  const targetOffsetTop = targetElement.offsetTop - paddingTop // 减去paddingTop
-  
   // 计算实际的文字行高，不包括缓冲值
   const lineHeight = readerSettings.value.lineHeight || 1.5
   const maskLines = readerSettings.value.maskLines || 3
@@ -1745,30 +2014,15 @@ const autoScrollToHighlightedSegment = (segmentId, type = 'original') => {
   // 计算可见区域的高度，直接使用可见行数乘以单行高度
   const visibleHeight = lineHeight * maskLines * fontSize
   
-  // 计算可见区域的边界
-  const visibleTop = containerScrollTop
-  const visibleBottom = containerScrollTop + visibleHeight
+  // 滚动到元素位于可见区域中央的位置（与手动滚动逻辑一致）
+  const targetOffsetTop = targetElement.offsetTop - paddingTop // 减去paddingTop
+  const scrollPosition = targetOffsetTop - visibleHeight / 2
   
-  // 检查意群是否在可见区域内
-  const targetTop = targetOffsetTop
-  const targetBottom = targetOffsetTop + targetElement.clientHeight
-  
-  // 计算最大滚动位置
-  const contentHeight = element.scrollHeight - paddingTop * 2 // 减去上下padding
   // 计算最大滚动位置，确保能够滚动到最后一行文字的开始位置
-  const maxScrollTop = contentHeight - visibleHeight
+  const contentHeight = element.scrollHeight - paddingTop * 2 // 减去上下padding
+  const maxScrollTop = contentHeight - lineHeight * maskLines * fontSize
   
-  // 如果意群完全在可见区域外，或者部分在可见区域外，需要滚动
-  if (targetBottom > visibleBottom || targetTop < visibleTop) {
-    // 滚动到使该意群位于可见区域中央
-    // 计算滚动位置，确保意群能够正确对齐中央可见区域
-    const scrollPosition = targetOffsetTop - visibleHeight / 2
-    
-    element.scrollTo({
-      top: Math.max(0, Math.min(maxScrollTop, scrollPosition)),
-      behavior: 'smooth'
-    })
-  }
+  element.scrollTop = Math.max(0, Math.min(maxScrollTop, scrollPosition))
 }
 
 // 切换全屏设置面板
@@ -1927,10 +2181,9 @@ const highlightOriginalSegments = () => {
       }
     }
     
-    // 监听timeupdate事件，实现毫秒级同步
-    const handleTimeUpdate = () => {
-      if (!isSpeakingOriginal.value) {
-        audioElement.removeEventListener('timeupdate', handleTimeUpdate)
+    // 使用requestAnimationFrame实现更精确的实时同步
+    const syncHighlight = () => {
+      if (!isSpeakingOriginal.value || !audioElement) {
         return
       }
       
@@ -1962,15 +2215,46 @@ const highlightOriginalSegments = () => {
         // 自动滚动到高亮意群
         autoScrollToHighlightedSegment(currentSegmentId, 'original')
       }
+      
+      // 继续同步
+      if (isSpeakingOriginal.value && currentTime < totalDuration) {
+        requestAnimationFrame(syncHighlight)
+      }
+    }
+    
+    // 监听timeupdate事件作为备用
+    const handleTimeUpdate = () => {
+      if (!isSpeakingOriginal.value) {
+        audioElement.removeEventListener('timeupdate', handleTimeUpdate)
+        return
+      }
     }
     
     // 监听ended事件
     const handleEnded = () => {
-      isSpeakingOriginal.value = false
-      currentOriginalSegment.value = null
-      originalSpeechPosition.value = 0 // 朗读完成，重置位置
       audioElement.removeEventListener('timeupdate', handleTimeUpdate)
       audioElement.removeEventListener('ended', handleEnded)
+      
+      // 检查是否需要自动翻页
+      const currentPage = paginationState.original.currentPage
+      const totalPages = paginationState.original.totalPages
+      
+      if (currentPage < totalPages) {
+        // 自动翻到下一页
+        nextPage('original')
+        
+        // 延迟一段时间后继续朗读新页面
+        setTimeout(() => {
+          // 从新页面开始朗读
+          originalSpeechPosition.value = 0
+          startOriginalSpeech()
+        }, 500) // 等待页面切换完成
+      } else {
+        // 已经是最后一页，结束朗读
+        isSpeakingOriginal.value = false
+        currentOriginalSegment.value = null
+        originalSpeechPosition.value = 0
+      }
     }
     
     // 先移除可能存在的旧监听器，避免重复添加
@@ -1980,6 +2264,9 @@ const highlightOriginalSegments = () => {
     // 添加事件监听器
     audioElement.addEventListener('timeupdate', handleTimeUpdate)
     audioElement.addEventListener('ended', handleEnded)
+    
+    // 使用requestAnimationFrame开始实时同步（比timeupdate更精确）
+    requestAnimationFrame(syncHighlight)
   } else {
     // 对于浏览器内置TTS，使用基于时间的估算
     const speechRate = readerSettings.value.speechRate || 1.0
@@ -2054,10 +2341,9 @@ const highlightSimplifiedSegments = () => {
       }
     }
     
-    // 监听timeupdate事件，实现毫秒级同步
-    const handleTimeUpdate = () => {
-      if (!isSpeakingSimplified.value) {
-        audioElement.removeEventListener('timeupdate', handleTimeUpdate)
+    // 使用requestAnimationFrame实现更精确的实时同步
+    const syncHighlight = () => {
+      if (!isSpeakingSimplified.value || !audioElement) {
         return
       }
       
@@ -2089,15 +2375,46 @@ const highlightSimplifiedSegments = () => {
         // 自动滚动到高亮意群
         autoScrollToHighlightedSegment(currentSegmentId, 'simplified')
       }
+      
+      // 继续同步
+      if (isSpeakingSimplified.value && currentTime < totalDuration) {
+        requestAnimationFrame(syncHighlight)
+      }
+    }
+    
+    // 监听timeupdate事件作为备用
+    const handleTimeUpdate = () => {
+      if (!isSpeakingSimplified.value) {
+        audioElement.removeEventListener('timeupdate', handleTimeUpdate)
+        return
+      }
     }
     
     // 监听ended事件
     const handleEnded = () => {
-      isSpeakingSimplified.value = false
-      currentSimplifiedSegment.value = null
-      simplifiedSpeechPosition.value = 0 // 朗读完成，重置位置
       audioElement.removeEventListener('timeupdate', handleTimeUpdate)
       audioElement.removeEventListener('ended', handleEnded)
+      
+      // 检查是否需要自动翻页
+      const currentPage = paginationState.simplified.currentPage
+      const totalPages = paginationState.simplified.totalPages
+      
+      if (currentPage < totalPages) {
+        // 自动翻到下一页
+        nextPage('simplified')
+        
+        // 延迟一段时间后继续朗读新页面
+        setTimeout(() => {
+          // 从新页面开始朗读
+          simplifiedSpeechPosition.value = 0
+          startSimplifiedSpeech()
+        }, 500) // 等待页面切换完成
+      } else {
+        // 已经是最后一页，结束朗读
+        isSpeakingSimplified.value = false
+        currentSimplifiedSegment.value = null
+        simplifiedSpeechPosition.value = 0
+      }
     }
     
     // 先移除可能存在的旧监听器，避免重复添加
@@ -2107,6 +2424,9 @@ const highlightSimplifiedSegments = () => {
     // 添加事件监听器
     audioElement.addEventListener('timeupdate', handleTimeUpdate)
     audioElement.addEventListener('ended', handleEnded)
+    
+    // 使用requestAnimationFrame开始实时同步（比timeupdate更精确）
+    requestAnimationFrame(syncHighlight)
   } else {
     // 对于浏览器内置TTS，使用基于时间的估算
     const speechRate = readerSettings.value.speechRate || 1.0
@@ -2201,8 +2521,12 @@ const handleClickOutside = (event) => {
   const settingPanel = document.querySelector('.fullscreen-settings-panel')
   const isClickOnSettingPanel = settingPanel && settingPanel.contains(event.target)
   
-  // 如果点击在设置面板外，且设置面板是打开的，则收起设置
-  if (!isClickOnSettingPanel && showFullScreenSettings.value) {
+  // 检查是否点击了 el-select 的下拉菜单
+  const selectDropdown = document.querySelector('.el-select-dropdown')
+  const isClickOnSelectDropdown = selectDropdown && selectDropdown.contains(event.target)
+  
+  // 如果点击在设置面板外，且不在下拉菜单上，且设置面板是打开的，则收起设置
+  if (!isClickOnSettingPanel && !isClickOnSelectDropdown && showFullScreenSettings.value) {
     showFullScreenSettings.value = false
   }
 }
@@ -2214,6 +2538,15 @@ const readingTime = ref(0)
 onMounted(() => {
   // 加载阅读器设置
   appStore.loadReaderSettings()
+  
+  // 添加调试日志：检查词性标注数据
+  console.log('=== 阅读器初始化 ===')
+  console.log('当前文档ID:', currentDocument.value.id)
+  console.log('pos_tags:', currentDocument.value.pos_tags)
+  console.log('pos_tags 长度:', currentDocument.value.pos_tags?.length || 0)
+  console.log('simplified_pos_tags:', currentDocument.value.simplified_pos_tags)
+  console.log('simplified_pos_tags 长度:', currentDocument.value.simplified_pos_tags?.length || 0)
+  console.log('posTagging 设置:', readerSettings.value.posTagging)
   
   // 如果没有文档内容，显示提示
   if (!currentDocument.value.content) {
@@ -2268,6 +2601,9 @@ onMounted(() => {
   // 阅读历史已在编辑器处理完成后添加，此处不再重复添加
   // 如果需要更新阅读进度，会通过其他机制处理
   
+  // 恢复上次阅读位置
+  restoreReadingPosition()
+  
   // 添加全屏状态变化监听器
   document.addEventListener('fullscreenchange', checkFullScreenStatus)
   
@@ -2298,23 +2634,25 @@ onMounted(() => {
 // 生命周期 - 组件卸载时移除监听器
 onUnmounted(() => {
   // 计算阅读时间
-  readingTime.value = Math.floor((Date.now() - readingStartTime.value) / 1000) // 转换为秒
+  const sessionReadTime = Math.floor((Date.now() - readingStartTime.value) / 1000) // 转换为秒
   
-  // 更新阅读历史的阅读时间
-  if (currentDocument.value.content && appStore.readingHistory.length > 0) {
-    // 找到最新添加的阅读历史记录
-    const latestHistory = appStore.readingHistory[0]
-    if (latestHistory.content === currentDocument.value.content) {
-      // 更新阅读时间
-      latestHistory.readTime = readingTime.value
-      latestHistory.lastRead = new Date().toISOString().slice(0, 19).replace('T', ' ')
+  // 更新阅读历史的阅读时间和进度
+  if (currentDocument.value.content) {
+    // 找到对应的阅读历史记录
+    const existingHistory = appStore.readingHistory.find(item => 
+      item.document_id === currentDocument.value.id || item.content === currentDocument.value.content
+    )
+    
+    if (existingHistory) {
+      // 累加阅读时间
+      existingHistory.readTime += sessionReadTime
+      // 更新最后阅读时间
+      existingHistory.lastRead = new Date().toISOString().slice(0, 19).replace('T', ' ')
+      // 更新阅读进度（使用当前页码）
+      existingHistory.readingProgress = Math.round((paginationState.original.currentPage / (paginationState.original.totalPages || 1)) * 100)
       
       // 保存到本地存储
-      if (appStore.user) {
-        const storageKey = `readingHistory_${appStore.user.id}`
-        localStorage.setItem(storageKey, JSON.stringify(appStore.readingHistory))
-      }
-      localStorage.setItem('readingHistory', JSON.stringify(appStore.readingHistory)) // 兼容旧版本
+      saveReadingHistoryToStorage()
     }
   }
   
@@ -2648,7 +2986,6 @@ body {
 .text-segment,
 .simplified-text-segment {
   display: inline;
-  margin-right: 2.5rem;
   padding: 0 0.4rem;
   border-radius: 4px;
   cursor: pointer;
@@ -2786,7 +3123,7 @@ body {
   color: white;
   padding: 1rem;
   border-radius: 4px;
-  z-index: 20;
+  z-index: 1000;
   min-width: 300px;
   max-height: 80vh;
   overflow-y: auto;
@@ -2795,7 +3132,6 @@ body {
   line-height: 1.4 !important;
   letter-spacing: normal !important;
   word-spacing: normal !important;
-  font-family: Arial, sans-serif !important;
 }
 
 .fullscreen-settings-panel h3 {
@@ -2817,6 +3153,94 @@ body {
 
 .fullscreen-settings-panel .el-slider {
   width: 100%;
+}
+
+.fullscreen-settings-panel .el-select {
+  width: 100%;
+  pointer-events: auto !important;
+}
+
+.fullscreen-settings-panel .el-select .el-select__input {
+  pointer-events: auto !important;
+}
+
+.fullscreen-settings-panel .el-select .el-select__caret {
+  pointer-events: auto !important;
+}
+
+/* 字体选择器样式 */
+.font-select {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  background-color: #fff;
+  color: #333;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 16px;
+}
+
+.font-select:hover {
+  border-color: #c0c4cc;
+}
+
+.font-select:focus {
+  outline: none;
+  border-color: #40826d;
+  box-shadow: 0 0 0 2px rgba(64, 130, 109, 0.2);
+}
+
+.font-select option {
+  padding: 8px;
+}
+
+/* 全屏设置面板中的字体选择器 */
+.fullscreen-settings-panel .font-select {
+  background-color: rgba(255, 255, 255, 0.95);
+  color: #333;
+}
+
+/* 全局下拉菜单样式 - 确保全屏模式下下拉菜单能正常显示 */
+:deep(.el-select-dropdown) {
+  z-index: 99999 !important;
+  position: fixed !important;
+  pointer-events: auto !important;
+}
+
+/* 全屏模式下的 el-select 下拉菜单 */
+:deep(.reader-content:fullscreen) ~ .el-select-dropdown {
+  z-index: 99999 !important;
+  position: fixed !important;
+}
+
+/* 确保下拉菜单的遮罩层也能正常显示 */
+:deep(.el-select-dropdown__wrap) {
+  pointer-events: auto !important;
+}
+
+/* 确保 el-overlay 不会阻止交互 */
+:deep(.el-overlay) {
+  z-index: 99998 !important;
+}
+
+/* 全屏模式下的下拉菜单容器 */
+:deep(.el-select-dropdown.el-popper) {
+  z-index: 99999 !important;
+  position: fixed !important;
+  top: auto !important;
+  left: auto !important;
+  transform: none !important;
+}
+
+/* 确保全屏模式下下拉菜单能在最顶层显示 */
+.fullscreen-settings-panel + .el-select-dropdown {
+  z-index: 99999 !important;
 }
 
 /* 上下滚动按钮 */
@@ -2996,7 +3420,8 @@ body {
 }
 
 .definitions h5,
-.examples h5 {
+.examples h5,
+.contextual-meaning h5 {
   margin-bottom: 0.5rem;
   color: #333;
 }
@@ -3013,10 +3438,33 @@ body {
   color: #666;
 }
 
+.contextual-meaning {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background-color: #f5f7fa;
+  border-radius: 4px;
+}
+
+.contextual-meaning p {
+  margin: 0;
+  color: #409EFF;
+  line-height: 1.6;
+}
+
 .no-definition {
   padding: 2rem;
   text-align: center;
   color: #666;
+}
+
+.loading-content {
+  padding: 2rem;
+  text-align: center;
+  color: #666;
+}
+
+.loading-content p {
+  margin-top: 1rem;
 }
 
 /* 分页控制样式 */
@@ -3041,16 +3489,147 @@ body {
   text-align: center;
 }
 
+/* 进度条样式 */
+.progress-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 1rem;
+  padding: 0 1rem;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 6px;
+  background-color: #eee;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background-color: #409eff;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 12px;
+  color: #666;
+  min-width: 40px;
+  text-align: right;
+}
+
+/* 目录样式 */
+.toc-container {
+  padding: 10px;
+}
+
+.toc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #eee;
+}
+
+.toc-progress {
+  font-weight: bold;
+  color: #40826D;
+}
+
+.toc-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.toc-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.toc-item:hover {
+  background-color: #f5f7fa;
+}
+
+.toc-item.active {
+  background-color: #c2d9d3;
+}
+
+.toc-page {
+  font-size: 14px;
+  color: #333;
+}
+
+.toc-current {
+  font-size: 12px;
+  color: #40826D;
+  font-weight: bold;
+}
+
 /* 全屏模式下的分页控制 */
 :deep(.reader-content:fullscreen) .pagination-controls {
   position: fixed;
-  bottom: 20px;
+  bottom : 20px;
   left: 20px;
-  transform: translateX(0);
-  background: rgba(255, 255, 255, 0.95);
-  padding: 0.5rem 1rem;
-  border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
-  z-index: 100;
+  transform : translateX(0);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 5px 20px;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 99;
+  display: flex;
+  gap: 1px;
+  align-items: center;
+}
+
+/* 全屏模式下的分页按钮 */
+:deep(.reader-content:fullscreen) .pagination-controls .el-button {
+  padding: 6px 14px;
+  font-size: 13px;
+  min-width: auto;
+}
+
+/* 全屏模式下的页码信息 */
+:deep(.reader-content:fullscreen) .pagination-controls .page-info {
+  font-size: 13px;
+  min-width: 50px;
+}
+
+/* 全屏模式下的目录对话框 */
+:deep(.reader-content:fullscreen) .el-dialog.toc-dialog {
+  z-index: 2147483647 !important;
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  margin: 0 !important;
+}
+
+/* 全屏模式下的目录对话框遮罩 */
+:deep(.reader-content:fullscreen) .el-overlay.el-dialog__wrapper {
+  z-index: 2147483646 !important;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  background-color: rgba(0, 0, 0, 0.5) !important;
+}
+
+/* 目录对话框基础样式 */
+.el-dialog.toc-dialog {
+  z-index: 1000 !important;
+}
+
+/* 目录对话框遮罩 */
+.el-overlay.el-dialog__wrapper {
+  z-index: 999 !important;
 }
 </style>

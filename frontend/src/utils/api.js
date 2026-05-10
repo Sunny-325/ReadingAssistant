@@ -231,7 +231,11 @@ export const processText = async (text, options, documentId) => {
       document_id: documentId
     })
     console.log('文本处理API响应:', response.data)
-    return response.data.data
+    // 返回完整的响应数据，包括 document_id
+    return {
+      ...response.data.data,
+      document_id: response.data.document_id
+    }
   } catch (error) {
     console.error('文本处理失败:', error)
     throw error

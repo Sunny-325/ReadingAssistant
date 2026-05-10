@@ -47,13 +47,13 @@
         />
       </el-form-item>
       
-      <!-- 词间距设置 -->
-      <el-form-item label="词间距">
+      <!-- 意群间距设置 -->
+      <el-form-item label="意群间距">
         <el-slider 
           v-model="localSettings.wordSpacing" 
-          :min="0" 
-          :max="5" 
-          :step="0.5"
+          :min="50" 
+          :max="120" 
+          :step="1"
           show-input
         />
       </el-form-item>

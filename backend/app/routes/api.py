@@ -39,11 +39,15 @@ router = APIRouter()
 @router.post("/text/process", response_model=Dict[str, Any])
 async def process_text(
     request: Dict[str, Any] = Body(...),
-    model_manager=Depends(get_model_manager)
+    model_manager=Depends(get_model_manager),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     """
     处理文本，应用各种阅读辅助功能（适用于短文本）
     """
+    created_document_id = None
+    
     try:
         # 验证文本长度
         text = request.get("text")
@@ -56,13 +60,68 @@ async def process_text(
         if len(text) > settings.MAX_TEXT_LENGTH:
             raise HTTPException(status_code=413, detail=f"文本长度超过限制（最大{settings.MAX_TEXT_LENGTH}字符）")
         
-        # 对于长文本，建议使用异步处理
+        # 解析document_id
+        try:
+            document_id = int(document_id) if document_id else None
+        except (ValueError, TypeError):
+            document_id = None
+        
+        # 创建或更新文档记录（无论文本长短都创建）
+        if not document_id:
+            # 创建新文档
+            new_document = Document(
+                user_id=current_user.id,
+                title="未命名文档",
+                content=text,
+                status=DocumentStatus.processing
+            )
+            db.add(new_document)
+            db.commit()
+            db.refresh(new_document)
+            document_id = new_document.id
+            created_document_id = document_id
+            logger.info(f"为文本处理创建文档记录: {document_id}")
+        else:
+            # 验证document_id是否有效
+            existing_document = db.query(Document).filter(
+                Document.id == document_id,
+                Document.user_id == current_user.id
+            ).first()
+            if existing_document:
+                # 更新现有文档内容
+                existing_document.content = text
+                existing_document.status = DocumentStatus.processing
+                db.commit()
+                logger.info(f"更新现有文档记录: {document_id}")
+            else:
+                # document_id无效，创建新文档
+                new_document = Document(
+                    user_id=current_user.id,
+                    title="未命名文档",
+                    content=text,
+                    status=DocumentStatus.processing
+                )
+                db.add(new_document)
+                db.commit()
+                db.refresh(new_document)
+                document_id = new_document.id
+                created_document_id = document_id
+                logger.info(f"document_id无效，创建新文档记录: {document_id}")
+        
+        # 对于长文本，建议使用异步处理（但仍返回document_id）
         if len(text) > 1000:
+            # 更新文档状态为等待异步处理
+            document = db.query(Document).filter(Document.id == document_id).first()
+            if document:
+                document.status = DocumentStatus.pending
+                db.commit()
+            
             return {
                 "message": "文本较长，建议使用异步处理",
                 "data": {
                     "suggest_async": True
-                }
+                },
+                "document_id": document_id
             }
         
         # 创建文本处理器
@@ -71,15 +130,35 @@ async def process_text(
         # 处理文本
         result = await text_processor.process_text(text, options)
         
-        logger.info(f"文本处理成功，长度: {len(text)}")
+        # 更新文档状态为已完成
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if document:
+            document.status = DocumentStatus.completed
+            db.commit()
+        
+        logger.info(f"文本处理成功，长度: {len(text)}，文档ID: {document_id}")
         return {
             "message": "文本处理成功",
-            "data": result
+            "data": result,
+            "document_id": document_id
         }
         
     except HTTPException:
+        # 如果创建了新文档但处理失败，标记为失败状态
+        if created_document_id:
+            document = db.query(Document).filter(Document.id == created_document_id).first()
+            if document:
+                document.status = DocumentStatus.failed
+                db.commit()
         raise
     except Exception as e:
+        # 如果创建了新文档但处理失败，标记为失败状态
+        if created_document_id:
+            document = db.query(Document).filter(Document.id == created_document_id).first()
+            if document:
+                document.status = DocumentStatus.failed
+                db.commit()
+        
         logger.error(f"文本处理失败: {e}")
         raise HTTPException(status_code=500, detail=f"文本处理失败: {str(e)}")
 
@@ -757,7 +836,7 @@ async def update_user_reading_history(
     db: Session = Depends(get_db)
 ):
     """
-    更新阅读历史记录（阅读进度、阅读时间等）
+    更新阅读历史记录（阅读进度、阅读时间、处理结果等）
     """
     try:
         # 查找指定的阅读历史记录
@@ -769,7 +848,7 @@ async def update_user_reading_history(
         if not history:
             raise HTTPException(status_code=404, detail="历史记录不存在")
         
-        # 更新字段
+        # 更新基本字段
         if "title" in updates:
             history.title = updates["title"]
         if "reading_progress" in updates:
@@ -780,6 +859,28 @@ async def update_user_reading_history(
             history.reading_time = updates["reading_time"]
         if "last_read_at" in updates:
             history.last_read_at = updates["last_read_at"]
+        
+        # 更新处理结果相关字段（当重新处理文档时更新）
+        if "content_snapshot" in updates:
+            history.content_snapshot = updates["content_snapshot"]
+        if "processed_content_snapshot" in updates:
+            history.processed_content_snapshot = updates["processed_content_snapshot"]
+        if "simplified_content_snapshot" in updates:
+            history.simplified_content_snapshot = updates["simplified_content_snapshot"]
+        if "segments_snapshot" in updates:
+            history.segments_snapshot = updates["segments_snapshot"]
+        if "simplified_segments_snapshot" in updates:
+            history.simplified_segments_snapshot = updates["simplified_segments_snapshot"]
+        if "pos_tags_snapshot" in updates:
+            history.pos_tags_snapshot = updates["pos_tags_snapshot"]
+        if "simplified_pos_tags_snapshot" in updates:
+            history.simplified_pos_tags_snapshot = updates["simplified_pos_tags_snapshot"]
+        if "primary_content_snapshot" in updates:
+            history.primary_content_snapshot = updates["primary_content_snapshot"]
+        if "secondary_content_snapshot" in updates:
+            history.secondary_content_snapshot = updates["secondary_content_snapshot"]
+        if "processing_settings_snapshot" in updates:
+            history.processing_settings_snapshot = updates["processing_settings_snapshot"]
         
         db.commit()
         db.refresh(history)

@@ -8,7 +8,11 @@
 import logging
 import jieba
 import jieba.posseg as pseg
+import numpy as np
+import re
 from typing import Dict, List, Tuple, Optional, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -106,13 +110,17 @@ class TextProcessor:
             "simplified_pos_tags": []
         }
         
-        # 1. 意群划分
+        # 1. 意群划分 - 始终生成segments用于分页（即使没有启用意群划分）
         if options.get("enableChunk", False):
             chunk_level = options.get("chunkLevel", 2)  # 1=轻度, 2=中度, 3=高度
             result["segments"] = self.segment_text(text, {"chunk_level": chunk_level})
         elif options.get("segmentation", False):
             # 兼容旧格式
             result["segments"] = self.segment_text(text, options.get("segmentation_params", {}))
+        else:
+            # 如果没有启用意群划分，生成基于字符数的伪意群用于分页
+            logger.info("未启用意群划分，生成伪意群用于分页")
+            result["segments"] = self.generate_pseudo_segments(text)
         
         # 2. 主次内容区分
         if options.get("enableMainContent", False):
@@ -294,37 +302,46 @@ class TextProcessor:
             
             logger.info(f"将长文本分为 {len(chunks)} 块，基于句子边界")
             
-            # 处理每块文本
+            # 处理每块文本 - 使用线程池并行处理
             all_segments = []
             all_simplified_chunks = []
+            results = []
             
-            # 准备处理任务
-            import asyncio
-            chunk_tasks = []
+            logger.info(f"开始并行处理 {len(chunks)} 个文本块")
             
-            for i, chunk in enumerate(chunks):
-                logger.info(f"准备处理第 {i+1} 块文本，长度: {len(chunk)}")
+            # 定义处理单个块的函数
+            def process_chunk(chunk_data):
+                i, chunk = chunk_data
+                logger.info(f"处理第 {i+1} 块文本，长度: {len(chunk)}")
+                
+                # 直接使用用户选择的选项
+                chunk_options = options.copy()
                 
                 # 处理当前块
-                chunk_options = options.copy()
-                # 保持所有原始设置
-                chunk_options["pos_tagging"] = options.get("pos_tagging", False)
-                chunk_options["enableMainContent"] = options.get("enableMainContent", False)
-                chunk_options["enableSimplify"] = options.get("enableSimplify", False)
-                chunk_options["enableChunk"] = options.get("enableChunk", True)
-                chunk_options["chunkLevel"] = options.get("chunkLevel", 2)  # 1=轻度, 2=中度, 3=高度
-                
-                # 创建处理任务
-                async def process_chunk(i, chunk, chunk_options):
-                    chunk_result = self._process_short_text(chunk, chunk_options)
-                    return i, chunk_result
-                
-                chunk_tasks.append(process_chunk(i, chunk, chunk_options))
+                chunk_result = self._process_short_text(chunk, chunk_options)
+                return i, chunk_result
             
-            # 并行处理所有块
-            if chunk_tasks:
-                logger.info(f"开始并行处理 {len(chunk_tasks)} 个文本块")
-                results = await asyncio.gather(*chunk_tasks)
+            # 使用线程池并行处理所有块
+            # 最大线程数根据块数决定，但不超过4个
+            max_workers = min(len(chunks), 4)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有任务
+                future_to_chunk = {
+                    executor.submit(process_chunk, (i, chunk)): i 
+                    for i, chunk in enumerate(chunks)
+                }
+                
+                # 收集结果
+                for future in as_completed(future_to_chunk):
+                    try:
+                        i, chunk_result = future.result()
+                        results.append((i, chunk_result))
+                    except Exception as e:
+                        logger.error(f"处理第 {i+1} 块文本失败: {e}")
+            
+            # 处理所有块
+            if results:
+                logger.info(f"成功处理 {len(results)} 个文本块")
                 
                 # 按块顺序处理结果
                 for i, chunk_result in sorted(results, key=lambda x: x[0]):
@@ -823,47 +840,47 @@ class TextProcessor:
                             current_chunk = []
                             current_length = 0
                             chunk_start_pos = current_pos
-                            
-                            # 处理最后一个意群
-                            if current_chunk:
-                                chunk_text = ''.join(current_chunk)
-                                if chunk_text:
-                                    # 处理以标点符号开头的意群
-                                    if re.match(r'^[，。！？；：、]', chunk_text):
-                                        # 如果以标点符号开头，尝试与前一个意群合并
-                                        if segments:
-                                            last_segment = segments[-1]
-                                            # 检查前一个意群是否已经以标点符号结尾
-                                            if not re.search(r'[，。！？；：、]$', last_segment["text"]):
-                                                merged_text = last_segment["text"] + chunk_text
-                                                # 更新前一个意群
-                                                segments[-1]["text"] = merged_text
-                                                segments[-1]["end_pos"] = current_pos
-                                        else:
-                                            # 如果是第一个意群，保留标点符号
-                                            # 使用记录的位置，而不是find方法
-                                            start_pos = chunk_start_pos
-                                            end_pos = current_pos
-                                            
-                                            segments.append({
-                                                "id": len(segments) + 1,
-                                                "text": chunk_text,  # 保留标点符号
-                                                "start_pos": start_pos,
-                                                "end_pos": end_pos,
-                                                "importance": 1.0
-                                            })
-                                    else:
-                                        # 使用记录的位置，而不是find方法
-                                        start_pos = chunk_start_pos
-                                        end_pos = current_pos
-                                        
-                                        segments.append({
-                                            "id": len(segments) + 1,
-                                            "text": chunk_text,  # 保留标点符号
-                                            "start_pos": start_pos,
-                                            "end_pos": end_pos,
-                                            "importance": 1.0
-                                        })
+                    
+                    # 处理最后一个意群（循环结束后）
+                    if current_chunk:
+                        chunk_text = ''.join(current_chunk)
+                        if chunk_text:
+                            # 处理以标点符号开头的意群
+                            if re.match(r'^[，。！？；：、]', chunk_text):
+                                # 如果以标点符号开头，尝试与前一个意群合并
+                                if segments:
+                                    last_segment = segments[-1]
+                                    # 检查前一个意群是否已经以标点符号结尾
+                                    if not re.search(r'[，。！？；：、]$', last_segment["text"]):
+                                        merged_text = last_segment["text"] + chunk_text
+                                        # 更新前一个意群
+                                        segments[-1]["text"] = merged_text
+                                        segments[-1]["end_pos"] = current_pos
+                                else:
+                                    # 如果是第一个意群，保留标点符号
+                                    # 使用记录的位置，而不是find方法
+                                    start_pos = chunk_start_pos
+                                    end_pos = current_pos
+                                    
+                                    segments.append({
+                                        "id": len(segments) + 1,
+                                        "text": chunk_text,  # 保留标点符号
+                                        "start_pos": start_pos,
+                                        "end_pos": end_pos,
+                                        "importance": 1.0
+                                    })
+                            else:
+                                # 使用记录的位置，而不是find方法
+                                start_pos = chunk_start_pos
+                                end_pos = current_pos
+                                
+                                segments.append({
+                                    "id": len(segments) + 1,
+                                    "text": chunk_text,  # 保留标点符号
+                                    "start_pos": start_pos,
+                                    "end_pos": end_pos,
+                                    "importance": 1.0
+                                })
             
             # 如果模型划分失败，使用基于标点和词语数的简单划分
             if not segments:
@@ -972,6 +989,88 @@ class TextProcessor:
             segments = [{"id": 1, "text": text, "start_pos": 0, "end_pos": len(text), "importance": 1.0}]
         
         return segments
+    
+    def generate_pseudo_segments(self, text: str, words_per_segment: int = 10) -> List[Dict[str, Any]]:
+        """
+        生成基于字符数的伪意群用于分页（当没有启用意群划分时使用）
+        
+        :param text: 原始文本
+        :param words_per_segment: 每个伪意群的词语数
+        :return: 伪意群列表
+        """
+        segments = []
+        
+        try:
+            # 使用jieba分词
+            words = list(jieba.cut(text))
+            
+            if not words:
+                return [{"id": 1, "text": text, "start_pos": 0, "end_pos": len(text), "importance": 1.0}]
+            
+            current_chunk = []
+            current_length = 0
+            chunk_start_pos = 0
+            current_pos = 0
+            semantic_boundaries = [',', '，', ';', '；', ':', '：', '。', '！', '？']
+            
+            for word in words:
+                current_chunk.append(word)
+                # 只计算实际词语的数量，标点符号不计入词语数
+                if word not in semantic_boundaries:
+                    current_length += 1
+                current_pos += len(word)
+                
+                # 达到words_per_segment或遇到句子结束符时划分
+                should_split = False
+                
+                # 1. 如果遇到完整的语义边界（句号、感叹号、问号），强制划分
+                if word in ['。', '！', '？']:
+                    should_split = True
+                # 2. 如果遇到逗号等分隔符，且已经达到合理长度，考虑划分
+                elif word in [',', '，', ';', '；', ':', '：'] and current_length >= words_per_segment * 0.8:
+                    should_split = True
+                # 3. 如果词语数超过限制，强制划分
+                elif current_length > words_per_segment * 1.5:
+                    should_split = True
+                
+                if should_split and current_chunk:
+                    chunk_text = ''.join(current_chunk)
+                    if chunk_text.strip():
+                        segments.append({
+                            "id": len(segments) + 1,
+                            "text": chunk_text,
+                            "start_pos": chunk_start_pos,
+                            "end_pos": current_pos,
+                            "importance": 1.0
+                        })
+                    
+                    # 重置当前意群
+                    current_chunk = []
+                    current_length = 0
+                    chunk_start_pos = current_pos
+            
+            # 处理最后一个意群
+            if current_chunk:
+                chunk_text = ''.join(current_chunk)
+                if chunk_text.strip():
+                    segments.append({
+                        "id": len(segments) + 1,
+                        "text": chunk_text,
+                        "start_pos": chunk_start_pos,
+                        "end_pos": current_pos,
+                        "importance": 1.0
+                    })
+            
+            # 如果没有划分结果，使用整个文本作为一个意群
+            if not segments:
+                segments = [{"id": 1, "text": text, "start_pos": 0, "end_pos": len(text), "importance": 1.0}]
+            
+            logger.info(f"生成伪意群完成，共 {len(segments)} 个")
+            return segments
+            
+        except Exception as e:
+            logger.error(f"生成伪意群失败: {e}")
+            return [{"id": 1, "text": text, "start_pos": 0, "end_pos": len(text), "importance": 1.0}]
     
     def prioritize_content(self, result: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1090,7 +1189,6 @@ class TextProcessor:
             # 1. 先计算所有意群的重要性分布
             importance_values = [seg.get("importance", 1.0) for seg in segments]
             if importance_values:
-                import numpy as np
                 # 计算标准差，了解重要性分布的离散程度
                 std_importance = np.std(importance_values) if len(importance_values) > 1 else 0
                 
@@ -1315,7 +1413,8 @@ class TextProcessor:
             "word": word,
             "phonetic": "",
             "definitions": [],
-            "examples": []
+            "examples": [],
+            "contextual_meaning": ""
         }
         
         try:
@@ -1324,19 +1423,58 @@ class TextProcessor:
             response = self.model_manager.generate_text(prompt, max_length=512)
             
             if response:
-                # 解析模型输出
+                # 保存原始响应
                 definition["raw_response"] = response
                 
-                # 简单解析，实际应用中可能需要更复杂的解析
+                # 改进的解析逻辑，支持多种格式
                 lines = response.split('\n')
+                current_definition = ""
+                current_example = ""
+                
                 for line in lines:
                     line = line.strip()
-                    if line.startswith("读音："):
-                        definition["phonetic"] = line.replace("读音：", "").strip()
-                    elif line.startswith("释义："):
-                        definition["definitions"].append(line.replace("释义：", "").strip())
-                    elif line.startswith("例："):
-                        definition["examples"].append(line.replace("例：", "").strip())
+                    if not line:
+                        continue
+                    
+                    # 尝试解析读音
+                    if line.startswith("读音：") or line.startswith("拼音：") or line.startswith("注音："):
+                        definition["phonetic"] = line.replace("读音：", "").replace("拼音：", "").replace("注音：", "").strip()
+                    # 尝试解析释义
+                    elif line.startswith("释义：") or line.startswith("解释：") or line.startswith("意思："):
+                        content = line.replace("释义：", "").replace("解释：", "").replace("意思：", "").strip()
+                        if content:
+                            definition["definitions"].append(content)
+                    # 尝试解析例句
+                    elif line.startswith("例：") or line.startswith("例句：") or line.startswith("例如："):
+                        content = line.replace("例：", "").replace("例句：", "").replace("例如：", "").strip()
+                        if content:
+                            definition["examples"].append(content)
+                    # 尝试解析带数字编号的释义
+                    elif re.match(r'^\d+[\.\uff0e、]\s*', line):
+                        content = re.sub(r'^\d+[\.\uff0e、]\s*', '', line)
+                        if content:
+                            definition["definitions"].append(content)
+                    # 尝试解析带破折号或冒号的释义
+                    elif "——" in line or "——" in line or ":" in line:
+                        parts = re.split(r'[——：:]', line, 1)
+                        if len(parts) > 1 and parts[1].strip():
+                            definition["definitions"].append(parts[1].strip())
+                    # 尝试解析上下文相关的解释
+                    elif "文中" in line or "语境" in line or "上下文" in line:
+                        definition["contextual_meaning"] += line + "\n"
+                
+                # 如果没有解析到结构化数据，使用原始响应作为备用
+                if not definition["definitions"] and response:
+                    # 尝试从响应中提取看起来像释义的内容
+                    sentences = re.split(r'[。！？\n]+', response)
+                    for sentence in sentences:
+                        sentence = sentence.strip()
+                        if len(sentence) > 5 and len(sentence) < 200 and word in sentence:
+                            definition["definitions"].append(sentence)
+                
+                # 如果仍然没有释义，使用原始响应作为单一释义
+                if not definition["definitions"] and response:
+                    definition["definitions"] = [response[:200] + "..." if len(response) > 200 else response]
         
         except Exception as e:
             logger.error(f"获取词语释义失败: {e}")

@@ -27,7 +27,7 @@ export const useAppStore = defineStore('app', {
       fontSize: 20,
       lineHeight: 2,
       letterSpacing: 0,
-      wordSpacing: 0,
+      wordSpacing: 50,
       backgroundColor: '#ffffff',
       textColor: '#333333',
       colorScheme: 'default',
@@ -92,15 +92,25 @@ export const useAppStore = defineStore('app', {
       simplifiedSegments: [],
       pos_tags: [],
       simplified_pos_tags: [],
-      processedInEditor: false  // 标记是否在编辑器中处理过
+      processedInEditor: false,  // 标记是否在编辑器中处理过
+      fromDocumentRecord: false,  // 标记是否从文档记录打开
+      fromHistory: false  // 标记是否从历史记录打开
     },
     // 当前模式：'reading'（阅读）或 'editing'（编辑）
     currentMode: 'editing',
+    // 文本处理状态
+    textProcessing: {
+      isProcessing: false,
+      content: '',
+      options: {},
+      taskId: null
+    },
     // 定义面板状态
     definitionPanel: {
       visible: false,
       word: '',
-      definition: {}
+      definition: {},
+      loading: false
     },
     // 语音合成状态
     speech: {
@@ -242,6 +252,42 @@ export const useAppStore = defineStore('app', {
         }
       }
     },
+    // 通用更新文档方法
+    async updateDocument(documentId, data) {
+      if (this.user && documentId && data) {
+        try {
+          console.log('更新文档:', documentId, data)
+          await updateDocumentApi(documentId, data)
+          // 重新加载文档列表
+          await this.loadDocuments()
+          console.log('文档更新成功')
+        } catch (error) {
+          console.error('更新文档失败:', error)
+          throw error
+        }
+      }
+    },
+    // 开始文本处理
+    startTextProcessing(content, options) {
+      this.textProcessing.isProcessing = true
+      this.textProcessing.content = content
+      this.textProcessing.options = { ...options }
+      this.textProcessing.taskId = null
+    },
+    
+    // 设置处理任务ID
+    setProcessingTaskId(taskId) {
+      this.textProcessing.taskId = taskId
+    },
+    
+    // 完成文本处理
+    finishTextProcessing() {
+      this.textProcessing.isProcessing = false
+      this.textProcessing.content = ''
+      this.textProcessing.options = {}
+      this.textProcessing.taskId = null
+    },
+    
     // 加载文档列表
     async loadDocuments() {
       if (this.user) {
@@ -366,11 +412,25 @@ export const useAppStore = defineStore('app', {
         if (history.title && history.title !== '未命名文档') {
           existingHistory.title = history.title
         }
+        // 更新阅读时间（累加）
         if (history.reading_time !== undefined) {
           existingHistory.readTime = (existingHistory.readTime || 0) + (history.reading_time || 0)
         }
+        // 更新阅读进度
         if (history.reading_progress !== undefined) {
           existingHistory.readingProgress = history.reading_progress
+        }
+        
+        // 如果有新的处理结果（内容变化后重新处理），更新处理结果
+        if (history.processedContent || history.segments) {
+          console.log('检测到新的处理结果，更新历史记录中的处理内容')
+          if (history.processedContent) existingHistory.processedContent = history.processedContent
+          if (history.simplifiedContent) existingHistory.simplifiedContent = history.simplifiedContent
+          if (history.segments) existingHistory.segments = history.segments
+          if (history.simplifiedSegments) existingHistory.simplifiedSegments = history.simplifiedSegments
+          if (history.pos_tags) existingHistory.pos_tags = history.pos_tags
+          if (history.simplified_pos_tags) existingHistory.simplified_pos_tags = history.simplified_pos_tags
+          if (history.processing_settings_snapshot) existingHistory.processing_settings_snapshot = history.processing_settings_snapshot
         }
         
         // 保存到本地存储
@@ -380,13 +440,29 @@ export const useAppStore = defineStore('app', {
         
         // 同步到后端（更新现有记录）
         try {
-          await updateHistoryApi(existingHistory.id, {
+          // 构建后端更新数据
+          const updateData = {
             title: history.title || existingHistory.title,
             reading_progress: history.reading_progress || existingHistory.readingProgress || 0.0,
             current_position: history.current_position || 0,
             reading_time: existingHistory.readTime || 0,
             last_read_at: existingHistory.lastRead ? new Date(existingHistory.lastRead).toISOString().slice(0, 19).replace('T', ' ') : new Date().toISOString().slice(0, 19).replace('T', ' ')
-          })
+          }
+          
+          // 如果有新的处理结果，也同步到后端
+          if (history.processedContent || history.segments) {
+            console.log('同步处理结果到后端')
+            if (history.content) updateData.content_snapshot = history.content
+            if (history.processedContent) updateData.processed_content_snapshot = history.processedContent
+            if (history.simplifiedContent) updateData.simplified_content_snapshot = history.simplifiedContent
+            if (history.segments) updateData.segments_snapshot = typeof history.segments === 'string' ? JSON.parse(history.segments) : history.segments
+            if (history.simplifiedSegments) updateData.simplified_segments_snapshot = typeof history.simplifiedSegments === 'string' ? JSON.parse(history.simplifiedSegments) : history.simplifiedSegments
+            if (history.pos_tags) updateData.pos_tags_snapshot = typeof history.pos_tags === 'string' ? JSON.parse(history.pos_tags) : history.pos_tags
+            if (history.simplified_pos_tags) updateData.simplified_pos_tags_snapshot = typeof history.simplified_pos_tags === 'string' ? JSON.parse(history.simplified_pos_tags) : history.simplified_pos_tags
+            if (history.processing_settings_snapshot) updateData.processing_settings_snapshot = typeof history.processing_settings_snapshot === 'string' ? JSON.parse(history.processing_settings_snapshot) : history.processing_settings_snapshot
+          }
+          
+          await updateHistoryApi(existingHistory.id, updateData)
         } catch (error) {
           console.error('更新阅读历史失败:', error)
         }
@@ -535,12 +611,21 @@ export const useAppStore = defineStore('app', {
       this.definitionPanel = {
         visible: true,
         word,
-        definition
+        definition,
+        loading: false
+      }
+    },
+    // 设置定义面板加载状态
+    setDefinitionLoading(loading) {
+      this.definitionPanel.loading = loading
+      if (loading) {
+        this.definitionPanel.visible = true
       }
     },
     // 隐藏定义面板
     hideDefinitionPanel() {
       this.definitionPanel.visible = false
+      this.definitionPanel.loading = false
     },
     // 开始语音合成
     startSpeech(words) {

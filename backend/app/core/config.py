@@ -60,9 +60,6 @@ class Settings(BaseSettings):
     MAX_TEXT_LENGTH: int = 10000
     SUPPORTED_FILE_TYPES: List[str] = [".txt", ".pdf", ".doc", ".docx"]
     
-    # 文本处理配置
-    CHUNK_SIZE: int = 500
-    
     # 日志配置
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "app.log"
@@ -80,7 +77,7 @@ class Settings(BaseSettings):
     CACHE_EXPIRE: int = 3600
     
     class Config:
-        env_file = ".env"
+        env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
         case_sensitive = True
         extra = "allow"
 

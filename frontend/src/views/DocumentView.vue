@@ -30,16 +30,67 @@
         </div>
         <div class="group-list">
           <div class="group-tags">
-            <el-tag
-              :type="selectedGroup === 'all' ? 'primary' : ''"
-              @click="() => {
-                selectedGroup = 'all'
-                selectedDocument = null
-              }"
-              class="group-tag all-tag"
-            >
-              全部
-            </el-tag>
+            <!-- 全部标签支持展开/收起 -->
+            <div class="group-item all-group">
+              <div class="group-header">
+                <div class="group-info" @click="toggleGroup('all')">
+                  <el-icon class="group-toggle-icon">
+                    <ArrowDown v-if="expandedGroups.includes('all')" />
+                    <ArrowRight v-else />
+                  </el-icon>
+                  <el-tag
+                    :type="selectedGroup === 'all' ? 'primary' : ''"
+                    @click.stop="() => {
+                      selectedGroup = 'all'
+                      selectedDocument = null
+                    }"
+                    class="group-tag all-tag"
+                  >
+                    全部
+                  </el-tag>
+                </div>
+                <div class="group-actions" v-if="expandedGroups.includes('all') && selectedDocuments.length > 0">
+                  <el-button 
+                    size="small" 
+                    type="danger" 
+                    @click.stop="batchDeleteSelected"
+                  >
+                    <el-icon><Delete /></el-icon> 批量删除
+                  </el-button>
+                  <el-button 
+                    size="small" 
+                    type="primary" 
+                    @click.stop="showBatchMoveDialog"
+                  >
+                    <el-icon><Right /></el-icon> 批量移动
+                  </el-button>
+                </div>
+              </div>
+              <div 
+                v-if="expandedGroups.includes('all')" 
+                class="group-documents"
+              >
+                <div 
+                  v-for="doc in getAllDocuments()" 
+                  :key="doc.id"
+                  class="group-document-item"
+                  @click="selectDocument(doc.id)"
+                >
+                  <el-checkbox 
+                    v-model="selectedDocuments" 
+                    :label="doc.id"
+                    class="document-checkbox"
+                  />
+                  <el-icon class="document-icon"><Document /></el-icon>
+                  <span class="document-title">{{ doc.title }}</span>
+                  <span class="document-date">{{ formatDate(doc.created_at) }}</span>
+                </div>
+                <div v-if="getAllDocuments().length === 0" class="no-documents">
+                  暂无文档
+                </div>
+              </div>
+            </div>
+            
             <div
               v-for="group in documentGroups"
               :key="group.id"
@@ -94,12 +145,36 @@
                   class="group-document-item"
                   @click="selectDocument(doc.id)"
                 >
+                  <el-checkbox 
+                    v-model="selectedDocuments" 
+                    :label="doc.id"
+                    class="document-checkbox"
+                  />
                   <el-icon class="document-icon"><Document /></el-icon>
                   <span class="document-title">{{ doc.title }}</span>
                   <span class="document-date">{{ formatDate(doc.created_at) }}</span>
                 </div>
                 <div v-if="getGroupDocuments(group.id).length === 0" class="no-documents">
                   该分组暂无文档
+                </div>
+                <!-- 分组内的批量操作按钮 -->
+                <div v-if="getGroupDocuments(group.id).length > 0" class="batch-actions">
+                  <el-button 
+                    size="small" 
+                    type="danger" 
+                    @click.stop="batchDeleteSelected"
+                    :disabled="selectedDocuments.length === 0"
+                  >
+                    <el-icon><Delete /></el-icon> 批量删除 ({{ selectedDocuments.length }})
+                  </el-button>
+                  <el-button 
+                    size="small" 
+                    type="primary" 
+                    @click.stop="showBatchMoveDialog"
+                    :disabled="selectedDocuments.length === 0"
+                  >
+                    <el-icon><Right /></el-icon> 批量移动
+                  </el-button>
                 </div>
               </div>
             </div>
@@ -300,18 +375,18 @@
     <!-- 重命名对话框 -->
     <el-dialog
       v-model="renameDialogVisible"
-      title="重命名文档"
+      :title="renameForm.type === 'group' ? '重命名分组' : '重命名文档'"
       width="30%"
     >
       <el-form :model="renameForm" label-width="80px">
-        <el-form-item label="新标题">
-          <el-input v-model="renameForm.title" placeholder="请输入新标题" />
+        <el-form-item :label="renameForm.type === 'group' ? '新分组名称' : '新标题'">
+          <el-input v-model="renameForm.title" placeholder="请输入新名称" />
         </el-form-item>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="renameDialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="renameDocument">确定</el-button>
+          <el-button type="primary" @click="handleRename">确定</el-button>
         </span>
       </template>
     </el-dialog>
@@ -338,6 +413,35 @@
         <span class="dialog-footer">
           <el-button @click="moveDialogVisible = false">取消</el-button>
           <el-button type="primary" @click="moveDocument">确定</el-button>
+        </span>
+      </template>
+    </el-dialog>
+    
+    <!-- 批量移动文档对话框 -->
+    <el-dialog
+      v-model="batchMoveDialogVisible"
+      title="批量移动文档"
+      width="30%"
+    >
+      <el-form :model="batchMoveForm" label-width="80px">
+        <el-form-item label="目标分组">
+          <el-select v-model="batchMoveForm.groupId" placeholder="选择分组">
+            <el-option
+              v-for="group in documentGroups"
+              :key="group.id"
+              :label="group.name"
+              :value="group.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="移动数量">
+          <span class="move-count">将移动 {{ selectedDocuments.length }} 个文档</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="batchMoveDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="batchMoveDocuments">确定</el-button>
         </span>
       </template>
     </el-dialog>
@@ -389,6 +493,9 @@ const currentPage = ref(1)
 const pageSize = ref(12)
 const expandedGroups = ref([]) // 存储展开的分组ID
 const selectedDocument = ref(null) // 选中的文档
+const selectedDocuments = ref([]) // 存储选中的文档ID列表（用于批量操作）
+const batchMoveDialogVisible = ref(false) // 批量移动对话框状态
+const batchMoveForm = ref({ groupId: '' }) // 批量移动表单数据
 
 // 从本地存储加载分组
 const loadGroups = () => {
@@ -418,7 +525,7 @@ const previewDialogVisible = ref(false)
 
 // 表单数据
 const newGroup = ref({ name: '' })
-const renameForm = ref({ title: '' })
+const renameForm = ref({ title: '', type: 'document', id: null })
 const moveForm = ref({ groupId: '' })
 
 // 预览数据
@@ -468,9 +575,6 @@ const handleSearch = () => {
   currentPage.value = 1 // 重置页码
 }
 
-const handleGroupChange = () => {
-  currentPage.value = 1 // 重置页码
-}
 
 const showCreateGroupDialog = () => {
   createGroupDialogVisible.value = true
@@ -514,7 +618,12 @@ const handleDocumentAction = (command) => {
     case 'rename':
       const docToRename = documents.value.find(d => d.id === id)
       if (docToRename) {
-        renameForm.value.title = docToRename.title
+        // 修复：正确设置重命名表单的类型为文档，并提供完整信息
+        renameForm.value = {
+          title: docToRename.title,
+          type: 'document',
+          id: id
+        }
         renameDialogVisible.value = true
       }
       break
@@ -522,7 +631,7 @@ const handleDocumentAction = (command) => {
       editDocument(id)
       break
     case 'move':
-      moveForm.value.groupId = documentGroups.value[0].id
+      moveForm.value.groupId = documentGroups.value[0]?.id || ''
       moveDialogVisible.value = true
       break
     case 'download':
@@ -547,22 +656,127 @@ const previewDocument = (document) => {
   previewDialogVisible.value = true
 }
 
-const openDocument = (document) => {
-  // 更新当前文档 - 文档记录只存储基本信息，处理后数据从阅读历史获取
-  appStore.updateCurrentDocument({
-    id: document.id,
-    title: document.title,
-    content: document.content,
-    processedContent: undefined,  // 文档记录不存储处理后内容
-    simplifiedContent: undefined,  // 文档记录不存储简化内容
-    segments: [],  // 文档记录不存储意群，阅读器会从历史获取或重新处理
-    simplifiedSegments: [],
-    pos_tags: [],
-    simplified_pos_tags: []
-  })
+const openDocument = async (document) => {
+  console.log('=== 点击打开文档（阅读模式）===')
+  console.log('文档ID:', document.id)
+  console.log('文档标题:', document.title)
   
-  // 导航到阅读器
-  router.push('/reader')
+  // 设置为阅读模式
+  appStore.setCurrentMode('reading')
+  
+  try {
+    // 先尝试获取文档的最新阅读历史
+    let historyData = null
+    try {
+      const token = localStorage.getItem('token')
+      console.log('token:', token ? '已获取' : '未获取')
+      if (token) {
+        const response = await fetch(`/api/documents/${document.id}/history`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        })
+        console.log('API响应状态:', response.status)
+        if (response.ok) {
+          const result = await response.json()
+          historyData = result.data
+          console.log('获取到文档的最新阅读历史:', historyData)
+        } else if (response.status === 404) {
+          console.log('文档没有阅读历史记录，将使用文档原始内容')
+        } else {
+          console.log('获取阅读历史失败，状态码:', response.status)
+        }
+      } else {
+        console.log('未登录，无法获取阅读历史')
+      }
+    } catch (error) {
+      console.log('获取阅读历史出错:', error)
+    }
+    
+    // 更新当前文档
+    const documentData = {
+      id: document.id,
+      title: historyData?.title || document.title,
+      content: historyData?.content_snapshot || document.content,
+      historyId: historyData?.id || null,
+      fromDocumentRecord: true,  // 标记从文档记录打开（阅读模式）
+      fromHistory: false  // 不是从历史记录打开
+    }
+    
+    // 如果有阅读历史，使用处理后的数据
+    if (historyData) {
+      documentData.processedContent = historyData.processed_content_snapshot || document.content
+      // 不加载简化文本相关数据，只加载原文本相关数据（从文档记录打开阅读）
+      documentData.simplifiedContent = undefined
+      documentData.simplifiedSegments = []
+      documentData.simplified_pos_tags = []
+      
+      // 安全解析数据，先检查是否已经是对象
+      const parseData = (data, defaultValue = []) => {
+        if (!data) return defaultValue
+        if (typeof data === 'object') return data
+        try {
+          return JSON.parse(data)
+        } catch (e) {
+          console.error('解析数据失败:', e)
+          return defaultValue
+        }
+      }
+      
+      // 使用安全解析，只加载原文本相关数据
+      documentData.segments = parseData(historyData.segments_snapshot, [])
+      documentData.pos_tags = parseData(historyData.pos_tags_snapshot, [])
+      
+      // 恢复处理设置
+      const settingsData = parseData(historyData.processing_settings_snapshot, null)
+      if (settingsData) {
+        console.log('=== 从历史记录恢复处理设置 ===')
+        console.log('settings:', settingsData)
+        
+        // 设置文档级别的处理设置（用于主次内容区分）
+        documentData.enableMainContent = settingsData.enableMainContent !== undefined ? settingsData.enableMainContent : false
+        documentData.enableChunk = settingsData.enableChunk !== undefined ? settingsData.enableChunk : true
+        
+        // 确保恢复意群划分、主次内容区分、词性标注设置
+        appStore.updateReaderSettings({
+          enableChunk: settingsData.enableChunk !== undefined ? settingsData.enableChunk : true,
+          enableMainContent: settingsData.enableMainContent !== undefined ? settingsData.enableMainContent : false,
+          posTagging: settingsData.posTagging !== undefined ? settingsData.posTagging : false,
+          chunkLevel: settingsData.chunkLevel !== undefined ? settingsData.chunkLevel : 2,
+          simplifyLevel: settingsData.simplifyLevel !== undefined ? settingsData.simplifyLevel : 1,
+          selectedPosTags: settingsData.selectedPosTags || ['n', 'v', 'a']
+        })
+      }
+    } else {
+      // 没有阅读历史，使用文档原始内容
+      documentData.processedContent = undefined
+      documentData.simplifiedContent = undefined
+      documentData.segments = []
+      documentData.simplifiedSegments = []
+      documentData.pos_tags = []
+      documentData.simplified_pos_tags = []
+      documentData.enableMainContent = false
+      documentData.enableChunk = true
+    }
+    
+    console.log('=== 更新当前文档 ===')
+    console.log('documentData:', documentData)
+    console.log('pos_tags 长度:', documentData.pos_tags?.length || 0)
+    console.log('simplified_pos_tags 长度:', documentData.simplified_pos_tags?.length || 0)
+    appStore.updateCurrentDocument(documentData)
+    
+    console.log('=== 导航到阅读器 ===')
+    router.push('/reader')
+    
+  } catch (error) {
+    console.error('打开文档失败:', error)
+    // 显示错误提示
+    if (typeof window !== 'undefined') {
+      import('element-plus').then(({ ElMessage }) => {
+        ElMessage.error('打开文档失败，请稍后重试')
+      })
+    }
+  }
 }
 
 const editDocument = async (documentId) => {
@@ -622,7 +836,8 @@ const editDocument = async (documentId) => {
       segments: processedData.segments,
       simplifiedSegments: processedData.simplifiedSegments,
       pos_tags: processedData.pos_tags,
-      simplified_pos_tags: processedData.simplified_pos_tags
+      simplified_pos_tags: processedData.simplified_pos_tags,
+      fromDocumentRecord: true  // 标记从文档记录打开编辑
     })
     
     // 导航到编辑器
@@ -673,9 +888,12 @@ const downloadDocument = (documentId) => {
     console.log('创建下载链接:', url)
 
     // 创建下载链接，使用 window.document 确保获取全局 document 对象
+    // 确保标题不包含扩展名，避免下载时出现双后缀
+    const titleWithoutExt = doc.title.replace(/\.[^/.]+$/, '')
+    
     const link = window.document.createElement('a')
     link.href = url
-    link.download = `${doc.title}.${extension}`
+    link.download = `${titleWithoutExt}.${extension}`
     console.log('下载文件名:', link.download)
 
     // 模拟点击下载
@@ -765,6 +983,88 @@ const getGroupDocuments = (groupId) => {
   return appStore.getDocumentsByGroup(groupId)
 }
 
+// 获取所有文档（用于"全部"标签）
+const getAllDocuments = () => {
+  if (!appStore.user) {
+    return []
+  }
+  return appStore.documents
+}
+
+// 切换文档选择状态
+const toggleDocumentSelection = (documentId) => {
+  const index = selectedDocuments.value.indexOf(documentId)
+  if (index > -1) {
+    selectedDocuments.value.splice(index, 1)
+  } else {
+    selectedDocuments.value.push(documentId)
+  }
+}
+
+// 显示批量移动对话框
+const showBatchMoveDialog = () => {
+  batchMoveForm.value.groupId = ''
+  batchMoveDialogVisible.value = true
+}
+
+// 批量删除选中的文档
+const batchDeleteSelected = async () => {
+  if (selectedDocuments.value.length === 0) {
+    ElMessage.warning('请先选择要删除的文档')
+    return
+  }
+  
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除选中的 ${selectedDocuments.value.length} 个文档吗？`,
+      '确认删除',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    for (const docId of selectedDocuments.value) {
+      await appStore.deleteDocument(docId)
+    }
+    
+    ElMessage.success(`成功删除 ${selectedDocuments.value.length} 个文档`)
+    selectedDocuments.value = []
+    await refreshDocuments()
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('删除失败')
+    }
+  }
+}
+
+// 批量移动文档
+const batchMoveDocuments = async () => {
+  if (selectedDocuments.value.length === 0) {
+    ElMessage.warning('请先选择要移动的文档')
+    return
+  }
+  
+  if (!batchMoveForm.value.groupId) {
+    ElMessage.warning('请选择目标分组')
+    return
+  }
+  
+  try {
+    for (const docId of selectedDocuments.value) {
+      await appStore.updateDocument(docId, { group_id: batchMoveForm.value.groupId })
+    }
+    
+    ElMessage.success(`成功移动 ${selectedDocuments.value.length} 个文档`)
+    selectedDocuments.value = []
+    batchMoveDialogVisible.value = false
+    await refreshDocuments()
+  } catch (error) {
+    ElMessage.error('移动失败')
+  }
+}
+
 // 选择文档
 const selectDocument = (documentId) => {
   selectedDocument.value = documents.value.find(doc => doc.id === documentId)
@@ -803,12 +1103,13 @@ const uploadToGroup = (groupId) => {
 const handleGroupAction = (command, groupId) => {
   switch (command) {
     case 'rename':
-      // 实际项目中，应该打开重命名对话框
-      ElMessage.info('重命名分组功能待实现')
-      break
-    case 'move':
-      // 实际项目中，应该打开移动文档对话框
-      ElMessage.info('移动文档功能待实现')
+      // 打开重命名分组对话框，正确设置表单类型为分组
+      renameForm.value = {
+        title: documentGroups.value.find(g => g.id === groupId)?.name || '',
+        type: 'group',
+        id: groupId
+      }
+      renameDialogVisible.value = true
       break
     case 'delete':
       deleteGroup(groupId)
@@ -816,11 +1117,25 @@ const handleGroupAction = (command, groupId) => {
   }
 }
 
+const handleRename = async () => {
+  if (!renameForm.value.title || !renameForm.value.id) {
+    return
+  }
+  
+  if (renameForm.value.type === 'group') {
+    // 重命名分组
+    renameGroup()
+  } else {
+    // 重命名文档
+    await renameDocument()
+  }
+}
+
 const renameDocument = async () => {
-  if (renameForm.value.title && currentDocumentId.value) {
+  if (renameForm.value.title && renameForm.value.id) {
     try {
       // 调用 API 更新文档标题
-      await appStore.updateDocumentTitle(currentDocumentId.value, renameForm.value.title)
+      await appStore.updateDocumentTitle(renameForm.value.id, renameForm.value.title)
       ElMessage.success('文档重命名成功')
     } catch (error) {
       console.error('重命名文档失败:', error)
@@ -828,6 +1143,23 @@ const renameDocument = async () => {
     }
     renameDialogVisible.value = false
     await appStore.loadDocuments() // 重新加载文档列表
+    // 如果当前选中的文档被重命名，更新选中文档的标题
+    if (selectedDocument.value && selectedDocument.value.id === renameForm.value.id) {
+      selectedDocument.value.title = renameForm.value.title
+    }
+  }
+}
+
+const renameGroup = () => {
+  if (renameForm.value.title && renameForm.value.id) {
+    // 找到分组并更新名称
+    const group = documentGroups.value.find(g => g.id === renameForm.value.id)
+    if (group) {
+      group.name = renameForm.value.title
+      saveGroups(documentGroups.value)
+      ElMessage.success('分组重命名成功')
+    }
+    renameDialogVisible.value = false
   }
 }
 
@@ -862,9 +1194,12 @@ const handleFileUpload = async (file) => {
     const uploadResult = await uploadFile(formData)
     console.log('文件上传API响应:', uploadResult)
     
+    // 去除文件名中的扩展名
+    const filenameWithoutExt = file.file.name.replace(/\.[^/.]+$/, '')
+    
     // 调用文档创建API
     const documentData = {
-      title: file.file.name,
+      title: filenameWithoutExt,
       source_type: 'file_upload',
       group_id: file.groupId, // 添加上传文件的分组ID
       original_filename: file.file.name,
@@ -1209,6 +1544,7 @@ onMounted(() => {
   text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
 }
 
@@ -1221,6 +1557,7 @@ onMounted(() => {
   text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 3;
+  line-clamp: 3;
   -webkit-box-orient: vertical;
 }
 

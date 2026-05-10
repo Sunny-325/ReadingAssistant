@@ -176,11 +176,13 @@ const openDocument = (history) => {
     title: history.title,
     content: history.content,
     processedContent: history.processedContent,
-    simplifiedContent: history.simplifiedContent,
+    simplifiedContent: history.simplifiedContent,  // 从历史记录打开时加载简化文本
     segments: history.segments || [],
     simplifiedSegments: history.simplifiedSegments || [],
     pos_tags: history.pos_tags || [],
-    simplified_pos_tags: history.simplified_pos_tags || []
+    simplified_pos_tags: history.simplified_pos_tags || [],
+    fromDocumentRecord: false,  // 不是从文档记录打开
+    fromHistory: true  // 标记从历史记录打开
   })
   
   // 调试日志：检查数据

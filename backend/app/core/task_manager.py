@@ -98,7 +98,7 @@ class TaskManager:
                 # 这些数据将在创建阅读历史时转移到 ReadingHistory 表
                 task.result_data = json.dumps({
                     "processed_text": result.get("processed_text", ""),
-                    "simplified_content": result.get("simplified_content", ""),
+                    "simplifiedContent": result.get("simplifiedContent", ""),  
                     "segments": result.get("segments", []),
                     "simplified_segments": result.get("simplified_segments", []),
                     "pos_tags": result.get("pos_tags", []),
