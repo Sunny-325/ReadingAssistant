@@ -110,25 +110,33 @@ class TextProcessor:
             "simplified_pos_tags": []
         }
         
-        # 1. 意群划分 - 始终生成segments用于分页（即使没有启用意群划分）
-        if options.get("enableChunk", False):
+        # 检查是否启用了文本简化
+        enable_simplify = options.get("enableSimplify", False) or options.get("simplification", False)
+        
+        # 1. 意群划分
+        # 如果启用了文本简化，原文本不再进行意群划分，只生成伪意群用于分页
+        # 意群划分只针对简化文本进行
+        if options.get("enableChunk", False) and not enable_simplify:
+            # 未启用文本简化，对原文本进行意群划分
             chunk_level = options.get("chunkLevel", 2)  # 1=轻度, 2=中度, 3=高度
             result["segments"] = self.segment_text(text, {"chunk_level": chunk_level})
-        elif options.get("segmentation", False):
+        elif options.get("segmentation", False) and not enable_simplify:
             # 兼容旧格式
             result["segments"] = self.segment_text(text, options.get("segmentation_params", {}))
         else:
-            # 如果没有启用意群划分，生成基于字符数的伪意群用于分页
-            logger.info("未启用意群划分，生成伪意群用于分页")
+            # 生成基于字符数的伪意群用于分页（不进行真实的意群划分）
+            logger.info("生成伪意群用于分页")
             result["segments"] = self.generate_pseudo_segments(text)
         
         # 2. 主次内容区分
-        if options.get("enableMainContent", False):
+        # 如果启用了文本简化，主次内容区分只针对简化文本进行
+        if options.get("enableMainContent", False) and not enable_simplify:
+            # 未启用文本简化，对原文本进行主次内容区分
             # 如果没有segments，生成默认的segments
             if not result["segments"]:
                 result["segments"] = self.segment_text(text, {"chunk_level": 2})  # 使用中度划分作为默认
             result = self.prioritize_content(result, options.get("mainContent_params", {}))
-        elif options.get("content_prioritization", False):
+        elif options.get("content_prioritization", False) and not enable_simplify:
             # 兼容旧格式
             # 如果没有segments，生成默认的segments
             if not result["segments"]:
@@ -146,12 +154,22 @@ class TextProcessor:
             simplifiedContent = self.simplify_text(original_processed, simplify_level)
             result["simplifiedContent"] = simplifiedContent
             
-            # 为简化文本生成独立的segments和pos_tags（只有启用了意群划分时）
-            if options.get("enableChunk", False):
+            # 为简化文本生成独立的segments和pos_tags（如果启用了意群划分或主次内容区分）
+            if options.get("enableChunk", False) or options.get("enableMainContent", False):
                 try:
                     # 为简化文本进行意群划分
-                    simplified_segments = self.segment_text(result["simplifiedContent"], {"chunk_level": options.get("chunkLevel", 2)})
+                    chunk_level = options.get("chunkLevel", 2)
+                    simplified_segments = self.segment_text(result["simplifiedContent"], {"chunk_level": chunk_level})
                     result["simplified_segments"] = simplified_segments
+                    
+                    # 如果启用了主次内容区分，对简化文本进行主次内容区分
+                    if options.get("enableMainContent", False):
+                        simplified_result = {
+                            "processed_text": result["simplifiedContent"],
+                            "segments": simplified_segments
+                        }
+                        simplified_result = self.prioritize_content(simplified_result, options.get("mainContent_params", {}))
+                        result["simplified_segments"] = simplified_result["segments"]
                     
                     # 为简化文本进行词性标注
                     result["simplified_pos_tags"] = self.tag_pos(result["simplifiedContent"])
@@ -162,8 +180,8 @@ class TextProcessor:
                     result["simplified_segments"] = []
                     result["simplified_pos_tags"] = []
             else:
-                # 如果没有启用意群划分，清空简化文本的segments
-                result["simplified_segments"] = []
+                # 如果没有启用意群划分或主次内容区分，生成伪意群用于分页
+                result["simplified_segments"] = self.generate_pseudo_segments(result["simplifiedContent"])
                 result["simplified_pos_tags"] = []
         elif options.get("simplification", False):
             # 兼容旧格式
@@ -1418,8 +1436,21 @@ class TextProcessor:
         }
         
         try:
-            # 使用模型获取释义
-            prompt = f"解释词语 '{word}' 的含义，包括读音、多个释义和例句。如果提供了上下文，请结合上下文解释：\n\n上下文：{context}"
+            # 使用模型获取释义，明确要求分开基本释义和文中含义
+            if context:
+                prompt = f"""请解释词语 '{word}'，按照以下格式输出：
+1. 读音：（拼音）
+2. 基本释义：（列出词语本身的含义，不含上下文）
+3. 文中含义：（结合提供的上下文解释词语在文中的具体意思）
+4. 例句：（举一个例子）
+
+上下文：{context}"""
+            else:
+                prompt = f"""请解释词语 '{word}'，按照以下格式输出：
+1. 读音：（拼音）
+2. 基本释义：（列出词语本身的含义）
+3. 例句：（举一个例子）"""
+            
             response = self.model_manager.generate_text(prompt, max_length=512)
             
             if response:
@@ -1428,43 +1459,62 @@ class TextProcessor:
                 
                 # 改进的解析逻辑，支持多种格式
                 lines = response.split('\n')
-                current_definition = ""
-                current_example = ""
+                in_contextual_section = False
                 
                 for line in lines:
                     line = line.strip()
                     if not line:
                         continue
                     
+                    # 检测是否进入文中含义部分
+                    if line.startswith("3. 文中含义：") or line.startswith("文中含义：") or \
+                       line.startswith("③ 文中含义") or line.startswith("● 文中含义"):
+                        in_contextual_section = True
+                        content = line.replace("3. 文中含义：", "").replace("文中含义：", "").strip()
+                        if content:
+                            definition["contextual_meaning"] = content
+                        continue
+                    
+                    # 如果在文中含义部分，继续收集内容
+                    if in_contextual_section:
+                        # 检查是否进入下一个部分
+                        if line.startswith("4. ") or line.startswith("例句：") or \
+                           line.startswith("④ ") or line.startswith("● 例句"):
+                            in_contextual_section = False
+                        else:
+                            if line:
+                                definition["contextual_meaning"] += "\n" + line
+                        continue
+                    
                     # 尝试解析读音
-                    if line.startswith("读音：") or line.startswith("拼音：") or line.startswith("注音："):
-                        definition["phonetic"] = line.replace("读音：", "").replace("拼音：", "").replace("注音：", "").strip()
-                    # 尝试解析释义
-                    elif line.startswith("释义：") or line.startswith("解释：") or line.startswith("意思："):
-                        content = line.replace("释义：", "").replace("解释：", "").replace("意思：", "").strip()
+                    if line.startswith("读音：") or line.startswith("拼音：") or line.startswith("注音：") or \
+                       line.startswith("1. 读音："):
+                        definition["phonetic"] = line.replace("1. 读音：", "").replace("读音：", "").replace("拼音：", "").replace("注音：", "").strip()
+                    # 尝试解析基本释义
+                    elif line.startswith("基本释义：") or line.startswith("2. 基本释义：") or \
+                         line.startswith("释义：") or line.startswith("解释：") or line.startswith("意思："):
+                        content = line.replace("2. 基本释义：", "").replace("基本释义：", "").replace("释义：", "").replace("解释：", "").replace("意思：", "").strip()
                         if content:
                             definition["definitions"].append(content)
                     # 尝试解析例句
-                    elif line.startswith("例：") or line.startswith("例句：") or line.startswith("例如："):
-                        content = line.replace("例：", "").replace("例句：", "").replace("例如：", "").strip()
+                    elif line.startswith("例：") or line.startswith("例句：") or line.startswith("例如：") or \
+                         line.startswith("4. 例句："):
+                        content = line.replace("4. 例句：", "").replace("例：", "").replace("例句：", "").replace("例如：", "").strip()
                         if content:
                             definition["examples"].append(content)
-                    # 尝试解析带数字编号的释义
+                    # 尝试解析带数字编号的释义（只在基本释义部分）
                     elif re.match(r'^\d+[\.\uff0e、]\s*', line):
                         content = re.sub(r'^\d+[\.\uff0e、]\s*', '', line)
-                        if content:
+                        if content and not in_contextual_section:
                             definition["definitions"].append(content)
-                    # 尝试解析带破折号或冒号的释义
-                    elif "——" in line or "——" in line or ":" in line:
+                    # 尝试解析带破折号或冒号的释义（只在基本释义部分）
+                    elif (("——" in line or ":" in line) and not in_contextual_section):
                         parts = re.split(r'[——：:]', line, 1)
                         if len(parts) > 1 and parts[1].strip():
                             definition["definitions"].append(parts[1].strip())
-                    # 尝试解析上下文相关的解释
-                    elif "文中" in line or "语境" in line or "上下文" in line:
-                        definition["contextual_meaning"] += line + "\n"
                 
                 # 如果没有解析到结构化数据，使用原始响应作为备用
-                if not definition["definitions"] and response:
+                if not definition["definitions"] and response and not in_contextual_section:
                     # 尝试从响应中提取看起来像释义的内容
                     sentences = re.split(r'[。！？\n]+', response)
                     for sentence in sentences:

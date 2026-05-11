@@ -38,7 +38,11 @@
             />
           </template>
         </el-table-column>
-        <el-table-column prop="reading_time" label="阅读时间" width="150" />
+        <el-table-column label="阅读时间" width="150">
+          <template #default="scope">
+            {{ formatReadTime(scope.row.reading_time || scope.row.readTime || 0) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="last_read_at" label="最后阅读" width="180" />
         <el-table-column label="操作" width="150">
           <template #default="scope">
@@ -159,6 +163,23 @@ const getContentPreview = (content) => {
   return content.substring(0, 100)
 }
 
+// 格式化阅读时间（秒 -> 更友好的格式）
+const formatReadTime = (seconds) => {
+  if (!seconds || seconds <= 0) return '0秒'
+  
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const secs = seconds % 60
+  
+  if (hours > 0) {
+    return `${hours}小时${minutes}分钟${secs}秒`
+  } else if (minutes > 0) {
+    return `${minutes}分钟${secs}秒`
+  } else {
+    return `${secs}秒`
+  }
+}
+
 const getProgressColor = (progress) => {
   if (progress < 0.3) return '#F56C6C'
   if (progress < 0.7) return '#E6A23C'
@@ -181,6 +202,7 @@ const openDocument = (history) => {
     simplifiedSegments: history.simplifiedSegments || [],
     pos_tags: history.pos_tags || [],
     simplified_pos_tags: history.simplified_pos_tags || [],
+    processingSettings: history.processingSettings || {},  // 传递处理设置到 currentDocument
     fromDocumentRecord: false,  // 不是从文档记录打开
     fromHistory: true  // 标记从历史记录打开
   })

@@ -37,7 +37,6 @@
             v-model="originalProgress" 
             :min="0" 
             :max="100" 
-            :disabled="!isSpeakingOriginal"
             @change="seekOriginalSpeech"
             :format-tooltip="(val) => val.toFixed(2) + '%'"
           />
@@ -402,7 +401,6 @@
             v-model="simplifiedProgress" 
             :min="0" 
             :max="100" 
-            :disabled="!isSpeakingSimplified"
             @change="seekSimplifiedSpeech"
             :format-tooltip="(val) => val.toFixed(2) + '%'"
           />
@@ -929,6 +927,18 @@ const simplifiedSpeechPosition = ref(0)
 const isOriginalFullScreen = ref(false)
 const isSimplifiedFullScreen = ref(false)
 
+// 页面停留时间跟踪
+const pageVisitTime = ref({
+  original: { page: 0, timestamp: 0 },
+  simplified: { page: 0, timestamp: 0 }
+})
+
+// 阅读进度更新定时器
+const progressUpdateTimer = ref(null)
+
+// 最小阅读停留时间（秒），超过此时间才计入阅读进度
+const MIN_READING_TIME = 3
+
 // 分页相关方法
 const fetchSegments = async (documentId, page, pageSize, type) => {
   try {
@@ -983,11 +993,24 @@ const fetchSegments = async (documentId, page, pageSize, type) => {
 const loadPage = async (type, page) => {
   const state = paginationState[type]
   
+  // 记录上一页的停留时间
+  const prevPage = state.currentPage
+  const prevTimestamp = pageVisitTime.value[type].timestamp
+  
+  if (prevPage > 0 && prevTimestamp > 0) {
+    const stayDuration = Math.floor((Date.now() - prevTimestamp) / 1000)
+    
+    // 如果停留时间超过最小阅读时间，更新阅读进度
+    if (stayDuration >= MIN_READING_TIME) {
+      updateReadingProgress(type, prevPage, stayDuration)
+    }
+  }
+  
   if (state.loadedPages.includes(page)) {
     state.currentPage = page
-    // 更新阅读进度
-    updateReadingProgress(type, page)
-    return
+    // 记录页面访问时间
+    pageVisitTime.value[type] = { page, timestamp: Date.now() }
+    return Promise.resolve()
   }
   
   const documentId = currentDocument.value.id
@@ -1001,18 +1024,20 @@ const loadPage = async (type, page) => {
     state.totalPages = result.total_pages
     state.currentPage = page
     
-    // 更新阅读进度
-    updateReadingProgress(type, page)
+    // 记录页面访问时间
+    pageVisitTime.value[type] = { page, timestamp: Date.now() }
     
     // 预加载下一页
     if (page < state.totalPages) {
       preloadNextPage(type)
     }
   }
+  
+  return Promise.resolve()
 }
 
 // 更新阅读进度
-const updateReadingProgress = (type, page) => {
+const updateReadingProgress = (type, page, stayDuration = 0) => {
   const state = paginationState[type]
   const progress = Math.round((page / state.totalPages) * 100)
   
@@ -1023,12 +1048,12 @@ const updateReadingProgress = (type, page) => {
     simplifiedProgress.value = progress
   }
   
-  // 更新阅读历史
-  updateReadingHistory(type, page, progress)
+  // 更新阅读历史（包含停留时间）
+  updateReadingHistory(type, page, progress, stayDuration)
 }
 
 // 更新阅读历史记录
-const updateReadingHistory = (type, page, progress) => {
+const updateReadingHistory = (type, page, progress, stayDuration = 0) => {
   if (!currentDocument.value.content) {
     return
   }
@@ -1039,15 +1064,90 @@ const updateReadingHistory = (type, page, progress) => {
   )
   
   if (existingHistory) {
-    // 更新阅读进度
-    existingHistory.readingProgress = progress
-    // 更新最后阅读时间
-    existingHistory.lastRead = new Date().toISOString().slice(0, 19).replace('T', ' ')
-    // 更新阅读时间（累加）
-    existingHistory.readTime += Math.floor((Date.now() - readingStartTime.value) / 1000)
+    // 检查是否启用了文本简化
+    // 优先从 currentDocument 中获取 processingSettings（当前实际使用的设置）
+    const processingSettings = currentDocument.value.processingSettings || 
+                               existingHistory.processingSettings || {}
+    const enableSimplify = processingSettings.enableSimplify || false
     
-    // 保存到本地存储和后端
-    saveReadingHistoryToStorage()
+    // 确定记录哪种文本类型的进度
+    // 如果启用了文本简化，记录简化文本的进度；否则记录原文本的进度
+    const shouldRecord = enableSimplify ? (type === 'simplified') : (type === 'original')
+    
+    if (shouldRecord) {
+      // 更新阅读进度（同时更新两种字段名格式）
+      existingHistory.readingProgress = progress
+      existingHistory.reading_progress = progress / 100  // 后端期望小数形式 (0-1)
+      
+      // 更新最后阅读时间（同时更新两种字段名格式）
+      const now = new Date()
+      // 使用正确的格式：YYYY-MM-DD HH:mm:ss
+      const year = now.getFullYear()
+      const month = String(now.getMonth() + 1).padStart(2, '0')
+      const day = String(now.getDate()).padStart(2, '0')
+      const hours = String(now.getHours()).padStart(2, '0')
+      const minutes = String(now.getMinutes()).padStart(2, '0')
+      const seconds = String(now.getSeconds()).padStart(2, '0')
+      const formattedTime = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+      existingHistory.lastRead = formattedTime
+      existingHistory.last_read_at = formattedTime
+      
+      // 更新阅读时间（累加停留时间）
+      if (stayDuration > 0) {
+        existingHistory.readTime += stayDuration
+        existingHistory.reading_time = existingHistory.readTime
+      }
+      
+      // 更新当前阅读位置（字符索引）
+      // 如果启用了文本简化，记录简化文本的位置；否则记录原文本的位置
+      let currentPosition = 0
+      if (type === 'original') {
+        currentPosition = originalSpeechPosition.value
+      } else {
+        currentPosition = simplifiedSpeechPosition.value
+      }
+      existingHistory.current_position = currentPosition
+      
+      // 保存到本地存储和后端
+      saveReadingHistoryToStorage()
+      
+      // 同步到后端
+      syncReadingHistoryToBackend(existingHistory)
+    }
+  }
+}
+
+// 同步阅读历史到后端
+const syncReadingHistoryToBackend = async (history) => {
+  if (!appStore.user || !history.id) {
+    return
+  }
+  
+  try {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      return
+    }
+    
+    const response = await fetch(`/api/user/history/${history.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        reading_progress: history.reading_progress || history.readingProgress / 100,
+        reading_time: history.reading_time || history.readTime,
+        last_read_at: history.last_read_at || history.lastRead,
+        current_position: history.current_position || 0
+      })
+    })
+    
+    if (!response.ok) {
+      console.error('同步阅读历史失败:', response.status)
+    }
+  } catch (error) {
+    console.error('同步阅读历史失败:', error)
   }
 }
 
@@ -1071,15 +1171,109 @@ const restoreReadingPosition = () => {
     item.document_id === currentDocument.value.id || item.content === currentDocument.value.content
   )
   
-  if (existingHistory && existingHistory.readingProgress > 0) {
-    // 根据阅读进度计算页码
-    const progress = existingHistory.readingProgress / 100
-    const totalPages = paginationState.original.totalPages || 1
-    const targetPage = Math.max(1, Math.ceil(progress * totalPages))
+  if (existingHistory) {
+    // 检查是否启用了文本简化
+    // 优先从 currentDocument 中获取 processingSettings（当前实际使用的设置）
+    // 如果不存在，则从历史记录中获取
+    const processingSettings = currentDocument.value.processingSettings || 
+                               existingHistory.processingSettings || {}
+    const enableSimplify = processingSettings.enableSimplify || false
+    
+    console.log('恢复阅读位置，processingSettings:', processingSettings)
+    console.log('enableSimplify:', enableSimplify)
+    console.log('simplifiedContent 是否存在:', !!currentDocument.value.simplifiedContent)
+    
+    // 根据设置决定恢复哪种文本类型的阅读位置
+    if (enableSimplify && currentDocument.value.simplifiedContent) {
+      // 恢复简化文本的阅读位置
+      console.log('恢复简化文本阅读位置')
+      restoreSimplifiedReadingPosition(existingHistory)
+    } else {
+      // 恢复原文本的阅读位置
+      console.log('恢复原文本阅读位置')
+      restoreOriginalReadingPosition(existingHistory)
+    }
+  }
+}
+
+// 恢复原文本阅读位置
+const restoreOriginalReadingPosition = (history) => {
+  if (!currentDocument.value.content) {
+    return
+  }
+  
+  let targetPosition = 0
+  
+  // 优先使用 current_position（字符索引）
+  if (history.current_position && history.current_position > 0) {
+    targetPosition = history.current_position
+  } else if (history.readingProgress && history.readingProgress > 0) {
+    // 使用阅读进度计算位置
+    const progress = history.readingProgress / 100
+    const fullText = currentDocument.value.content
+    targetPosition = Math.floor(progress * fullText.length)
+  }
+  
+  // 恢复朗读位置
+  originalSpeechPosition.value = targetPosition
+  
+  // 计算目标页码
+  const segment = segments.value.find(s => s.start_pos <= targetPosition && s.end_pos > targetPosition)
+  if (segment) {
+    const segmentIndex = segments.value.findIndex(s => s.id === segment.id)
+    const pageSize = paginationState.original.pageSize
+    const targetPage = Math.ceil((segmentIndex + 1) / pageSize)
     
     // 跳转到上次阅读的页面
     setTimeout(() => {
-      loadPage('original', targetPage)
+      loadPage('original', targetPage).then(() => {
+        // 页面加载完成后，滚动到目标意群并设置高亮
+        nextTick(() => {
+          scrollToSegment(segment.id, 'original')
+          currentOriginalSegment.value = segment.id
+        })
+      })
+    }, 500)
+  }
+}
+
+// 恢复简化文本阅读位置
+const restoreSimplifiedReadingPosition = (history) => {
+  if (!currentDocument.value.simplifiedContent) {
+    return
+  }
+  
+  let targetPosition = 0
+  
+  // 优先使用 current_position（字符索引）
+  if (history.current_position && history.current_position > 0) {
+    targetPosition = history.current_position
+  } else if (history.readingProgress && history.readingProgress > 0) {
+    // 使用阅读进度计算位置
+    const progress = history.readingProgress / 100
+    const fullText = currentDocument.value.simplifiedContent
+    targetPosition = Math.floor(progress * fullText.length)
+  }
+  
+  // 恢复朗读位置
+  simplifiedSpeechPosition.value = targetPosition
+  
+  // 计算目标页码
+  const segment = simplifiedSegments.value.find(s => s.start_pos <= targetPosition && s.end_pos > targetPosition)
+  if (segment) {
+    const segmentIndex = simplifiedSegments.value.findIndex(s => s.id === segment.id)
+    const pageSize = paginationState.simplified.pageSize
+    const targetPage = Math.ceil((segmentIndex + 1) / pageSize)
+    
+    // 跳转到上次阅读的页面
+    setTimeout(() => {
+      loadPage('simplified', targetPage).then(() => {
+        // 页面加载完成后，滚动到目标意群并设置高亮
+        nextTick(() => {
+          scrollToSegment(segment.id, 'simplified')
+          currentSimplifiedSegment.value = segment.id
+        })
+      })
     }, 500)
   }
 }
@@ -1112,21 +1306,52 @@ const preloadNextPage = async (type) => {
 const nextPage = (type) => {
   const state = paginationState[type]
   if (state.currentPage < state.totalPages) {
-    loadPage(type, state.currentPage + 1)
+    loadPage(type, state.currentPage + 1).then(() => {
+      // 更新当前页面的第一个意群为高亮
+      updateHighlightOnPageChange(type)
+    })
   }
 }
 
 const prevPage = (type) => {
   const state = paginationState[type]
   if (state.currentPage > 1) {
-    loadPage(type, state.currentPage - 1)
+    loadPage(type, state.currentPage - 1).then(() => {
+      // 更新当前页面的第一个意群为高亮
+      updateHighlightOnPageChange(type)
+    })
   }
 }
 
 const goToPage = (type, page) => {
   const state = paginationState[type]
   if (page >= 1 && page <= state.totalPages) {
-    loadPage(type, page)
+    loadPage(type, page).then(() => {
+      // 更新当前页面的第一个意群为高亮
+      updateHighlightOnPageChange(type)
+    })
+  }
+}
+
+// 翻页时更新意群高亮
+const updateHighlightOnPageChange = (type) => {
+  const state = paginationState[type]
+  const currentPage = state.currentPage
+  const pageSize = state.pageSize
+  
+  // 计算当前页面第一个意群的索引
+  const firstSegmentIndex = (currentPage - 1) * pageSize
+  
+  // 获取当前页面的意群列表
+  const allSegments = type === 'original' ? segments.value : simplifiedSegments.value
+  
+  if (allSegments.length > firstSegmentIndex) {
+    const firstSegment = allSegments[firstSegmentIndex]
+    if (type === 'original') {
+      currentOriginalSegment.value = firstSegment.id
+    } else {
+      currentSimplifiedSegment.value = firstSegment.id
+    }
   }
 }
 
@@ -1273,8 +1498,9 @@ const handleQueryWord = async () => {
   
   try {
     appStore.setDefinitionLoading(true)
-    // 获取当前文档内容作为上下文
-    const context = currentDocument.value.content || ''
+    // 获取词语附近的部分上下文（避免发送整篇文章）
+    const fullContent = currentDocument.value.content || ''
+    const context = getPartialContext(fullContent, queryWord.value, 200)
     const definition = await getWordDefinition(queryWord.value, context)
     appStore.showDefinitionPanel(queryWord.value, definition)
   } catch (error) {
@@ -1282,6 +1508,34 @@ const handleQueryWord = async () => {
     appStore.hideDefinitionPanel()
     alert('获取词语释义失败，请稍后重试')
   }
+}
+
+// 获取词语附近的部分上下文
+const getPartialContext = (content, word, contextLength = 200) => {
+  if (!content || !word) return ''
+  
+  const index = content.indexOf(word)
+  if (index === -1) {
+    // 如果找不到词语，返回开头部分
+    return content.substring(0, Math.min(contextLength * 2, content.length))
+  }
+  
+  // 获取词语前后各contextLength长度的上下文
+  const start = Math.max(0, index - contextLength)
+  const end = Math.min(content.length, index + word.length + contextLength)
+  
+  let result = content.substring(start, end)
+  
+  // 如果不是从开头开始，添加省略号
+  if (start > 0) {
+    result = '...' + result
+  }
+  // 如果不是到结尾，添加省略号
+  if (end < content.length) {
+    result = result + '...'
+  }
+  
+  return result
 }
 
 const getPosClass = (word, position, isSimplified = false) => {
@@ -1371,17 +1625,34 @@ const startOriginalSpeech = async (startFromPosition = null) => {
   const ttsProvider = readerSettings.value.ttsProvider || 'pyttsx3' // 默认使用pyttsx3
   
   // 确定从哪个位置开始朗读
-  let startPosition = startFromPosition !== null ? startFromPosition : originalSpeechPosition.value
+  let startPosition = 0
   
-  // 如果没有指定位置，且当前有页码信息，从当前页面开始
-  if (startFromPosition === null && originalSpeechPosition.value === 0) {
+  if (startFromPosition !== null) {
+    // 如果传入了指定位置，使用传入的位置（如拖动音频条）
+    startPosition = startFromPosition
+  } else {
+    // 用户主动点击播放，从当前页面的第一个意群开始
     const currentPage = paginationState.original.currentPage
     const pageSize = paginationState.original.pageSize
-    // 计算当前页面的起始字符位置（每页pageSize个意群，每个意群平均约20字符）
-    const estimatedCharsPerSegment = 20
-    startPosition = (currentPage - 1) * pageSize * estimatedCharsPerSegment
+    
+    // 计算当前页面的起始意群索引
+    const startSegmentIndex = (currentPage - 1) * pageSize
+    
+    // 获取当前页面的第一个意群
+    if (segments.value.length > 0 && startSegmentIndex < segments.value.length) {
+      const firstSegment = segments.value[startSegmentIndex]
+      startPosition = firstSegment.start_pos || 0
+    } else {
+      // 如果没有意群数据，使用估算值
+      const estimatedCharsPerSegment = 20
+      startPosition = startSegmentIndex * estimatedCharsPerSegment
+    }
+    
     // 确保不超过文本长度
     startPosition = Math.min(startPosition, fullText.length - 1)
+    
+    // 更新朗读位置为当前页面开始位置
+    originalSpeechPosition.value = startPosition
   }
   
   // 如果上次朗读已完成，从头开始
@@ -1514,17 +1785,32 @@ const seekOriginalSpeech = (value) => {
     
     // 自动跳转到目标意群所在的页面
     const pageSize = paginationState.original.pageSize
-    const targetPage = Math.ceil(segment.id / pageSize)
+    // 使用意群在数组中的索引来计算页码（更准确）
+    const segmentIndex = segments.value.findIndex(s => s.id === segment.id)
+    const targetPage = Math.ceil((segmentIndex + 1) / pageSize)
     
     // 如果目标页面与当前页面不同，先加载目标页面
     if (targetPage !== paginationState.original.currentPage) {
       loadPage('original', targetPage).then(() => {
-        // 页面加载完成后，滚动到目标意群
-        scrollToSegment(segment.id, 'original')
+        // 页面加载完成后，等待DOM更新再滚动
+        nextTick(() => {
+          scrollToSegment(segment.id, 'original')
+          // 开始朗读
+          startOriginalSpeech(targetPosition)
+        })
       })
     } else {
       // 已经在目标页面，直接滚动
       scrollToSegment(segment.id, 'original')
+      // 如果没有播放，从当前位置开始播放
+      if (!isSpeakingOriginal.value) {
+        startOriginalSpeech(targetPosition)
+      }
+    }
+  } else {
+    // 如果找不到意群，从指定位置开始朗读
+    if (!isSpeakingOriginal.value) {
+      startOriginalSpeech(targetPosition)
     }
   }
   
@@ -1532,9 +1818,6 @@ const seekOriginalSpeech = (value) => {
   if (originalAudio.value && isSpeakingOriginal.value) {
     const targetTime = (value / 100) * originalAudio.value.duration
     originalAudio.value.currentTime = targetTime
-  } else if (!isSpeakingOriginal.value) {
-    // 如果没有播放，从当前位置开始播放
-    startOriginalSpeech(targetPosition)
   }
 }
 
@@ -1571,17 +1854,34 @@ const startSimplifiedSpeech = async (startFromPosition = null) => {
   const ttsProvider = readerSettings.value.ttsProvider || 'pyttsx3' // 默认使用pyttsx3
   
   // 确定从哪个位置开始朗读
-  let startPosition = startFromPosition !== null ? startFromPosition : simplifiedSpeechPosition.value
+  let startPosition = 0
   
-  // 如果没有指定位置，且当前有页码信息，从当前页面开始
-  if (startFromPosition === null && simplifiedSpeechPosition.value === 0) {
+  if (startFromPosition !== null) {
+    // 如果传入了指定位置，使用传入的位置（如拖动音频条）
+    startPosition = startFromPosition
+  } else {
+    // 用户主动点击播放，从当前页面的第一个意群开始
     const currentPage = paginationState.simplified.currentPage
     const pageSize = paginationState.simplified.pageSize
-    // 计算当前页面的起始字符位置（每页pageSize个意群，每个意群平均约20字符）
-    const estimatedCharsPerSegment = 20
-    startPosition = (currentPage - 1) * pageSize * estimatedCharsPerSegment
+    
+    // 计算当前页面的起始意群索引
+    const startSegmentIndex = (currentPage - 1) * pageSize
+    
+    // 获取当前页面的第一个意群
+    if (simplifiedSegments.value.length > 0 && startSegmentIndex < simplifiedSegments.value.length) {
+      const firstSegment = simplifiedSegments.value[startSegmentIndex]
+      startPosition = firstSegment.start_pos || 0
+    } else {
+      // 如果没有意群数据，使用估算值
+      const estimatedCharsPerSegment = 20
+      startPosition = startSegmentIndex * estimatedCharsPerSegment
+    }
+    
     // 确保不超过文本长度
     startPosition = Math.min(startPosition, fullText.length - 1)
+    
+    // 更新朗读位置为当前页面开始位置
+    simplifiedSpeechPosition.value = startPosition
   }
   
   // 如果上次朗读已完成，从头开始
@@ -1714,17 +2014,32 @@ const seekSimplifiedSpeech = (value) => {
     
     // 自动跳转到目标意群所在的页面
     const pageSize = paginationState.simplified.pageSize
-    const targetPage = Math.ceil(segment.id / pageSize)
+    // 使用意群在数组中的索引来计算页码（更准确）
+    const segmentIndex = simplifiedSegments.value.findIndex(s => s.id === segment.id)
+    const targetPage = Math.ceil((segmentIndex + 1) / pageSize)
     
     // 如果目标页面与当前页面不同，先加载目标页面
     if (targetPage !== paginationState.simplified.currentPage) {
       loadPage('simplified', targetPage).then(() => {
-        // 页面加载完成后，滚动到目标意群
-        scrollToSegment(segment.id, 'simplified')
+        // 页面加载完成后，等待DOM更新再滚动
+        nextTick(() => {
+          scrollToSegment(segment.id, 'simplified')
+          // 开始朗读
+          startSimplifiedSpeech(targetPosition)
+        })
       })
     } else {
       // 已经在目标页面，直接滚动
       scrollToSegment(segment.id, 'simplified')
+      // 如果没有播放，从当前位置开始播放
+      if (!isSpeakingSimplified.value) {
+        startSimplifiedSpeech(targetPosition)
+      }
+    }
+  } else {
+    // 如果找不到意群，从指定位置开始朗读
+    if (!isSpeakingSimplified.value) {
+      startSimplifiedSpeech(targetPosition)
     }
   }
   
@@ -1732,51 +2047,10 @@ const seekSimplifiedSpeech = (value) => {
   if (simplifiedAudio.value && isSpeakingSimplified.value) {
     const targetTime = (value / 100) * simplifiedAudio.value.duration
     simplifiedAudio.value.currentTime = targetTime
-  } else if (!isSpeakingSimplified.value) {
-    // 如果没有播放，从当前位置开始播放
-    startSimplifiedSpeech(targetPosition)
   }
 }
 
-// 更新原文本高亮
-const updateOriginalHighlight = () => {
-  if (originalAudio.value && originalAudio.value.duration > 0) {
-    const fullText = currentDocument.value.content
-    const currentTime = originalAudio.value.currentTime
-    const totalDuration = originalAudio.value.duration
-    const segmentId = getCurrentSegmentByProgress(segments.value, fullText, currentTime, totalDuration)
-    
-    if (segmentId !== currentOriginalSegment.value) {
-      currentOriginalSegment.value = segmentId
-      // 滚动到当前高亮的意群
-      if (isOriginalFullScreen.value) {
-        const element = originalContentRef.value
-        const targetElement = document.querySelector(`.text-segment[data-segment-id="${segmentId}"]`)
-        scrollToElement(element, targetElement)
-      }
-    }
-  }
-}
 
-// 更新简化文本高亮
-const updateSimplifiedHighlight = () => {
-  if (simplifiedAudio.value && simplifiedAudio.value.duration > 0) {
-    const fullText = currentDocument.value.simplifiedContent
-    const currentTime = simplifiedAudio.value.currentTime
-    const totalDuration = simplifiedAudio.value.duration
-    const segmentId = getCurrentSegmentByProgress(simplifiedSegments.value, fullText, currentTime, totalDuration)
-    
-    if (segmentId !== currentSimplifiedSegment.value) {
-      currentSimplifiedSegment.value = segmentId
-      // 滚动到当前高亮的意群
-      if (isSimplifiedFullScreen.value) {
-        const element = simplifiedContentRef.value
-        const targetElement = document.querySelector(`.simplified-text-segment[data-segment-id="${segmentId}"]`)
-        scrollToElement(element, targetElement)
-      }
-    }
-  }
-}
 
 // 全屏功能
 const toggleFullScreen = (type) => {
@@ -2212,8 +2486,30 @@ const highlightOriginalSegments = () => {
       
       if (currentSegmentId !== currentOriginalSegment.value) {
         currentOriginalSegment.value = currentSegmentId
-        // 自动滚动到高亮意群
-        autoScrollToHighlightedSegment(currentSegmentId, 'original')
+        
+        // 检查当前意群是否在当前页面上
+        const currentSegment = segmentsWithPositions.find(s => s.id === currentSegmentId)
+        if (currentSegment) {
+          const segmentIndex = segmentsWithPositions.findIndex(s => s.id === currentSegmentId)
+          const pageSize = paginationState.original.pageSize
+          const targetPage = Math.ceil((segmentIndex + 1) / pageSize)
+          
+          if (targetPage !== paginationState.original.currentPage) {
+            // 意群不在当前页面，需要翻页
+            loadPage('original', targetPage).then(() => {
+              // 页面加载完成后，滚动到目标意群
+              nextTick(() => {
+                scrollToSegment(currentSegmentId, 'original')
+              })
+            })
+          } else {
+            // 意群在当前页面，检查是否需要滚动（仅蒙版模式下自动滚动）
+            const isMaskEnabled = isOriginalFullScreen.value && readerSettings.value.enableMask
+            if (isMaskEnabled) {
+              autoScrollToHighlightedSegment(currentSegmentId, 'original')
+            }
+          }
+        }
       }
       
       // 继续同步
@@ -2372,8 +2668,30 @@ const highlightSimplifiedSegments = () => {
       
       if (currentSegmentId !== currentSimplifiedSegment.value) {
         currentSimplifiedSegment.value = currentSegmentId
-        // 自动滚动到高亮意群
-        autoScrollToHighlightedSegment(currentSegmentId, 'simplified')
+        
+        // 检查当前意群是否在当前页面上
+        const currentSegment = segmentsWithPositions.find(s => s.id === currentSegmentId)
+        if (currentSegment) {
+          const segmentIndex = segmentsWithPositions.findIndex(s => s.id === currentSegmentId)
+          const pageSize = paginationState.simplified.pageSize
+          const targetPage = Math.ceil((segmentIndex + 1) / pageSize)
+          
+          if (targetPage !== paginationState.simplified.currentPage) {
+            // 意群不在当前页面，需要翻页
+            loadPage('simplified', targetPage).then(() => {
+              // 页面加载完成后，滚动到目标意群
+              nextTick(() => {
+                scrollToSegment(currentSegmentId, 'simplified')
+              })
+            })
+          } else {
+            // 意群在当前页面，检查是否需要滚动（仅蒙版模式下自动滚动）
+            const isMaskEnabled = isSimplifiedFullScreen.value && readerSettings.value.enableMask
+            if (isMaskEnabled) {
+              autoScrollToHighlightedSegment(currentSegmentId, 'simplified')
+            }
+          }
+        }
       }
       
       // 继续同步
@@ -2531,10 +2849,6 @@ const handleClickOutside = (event) => {
   }
 }
 
-// 阅读时间记录
-const readingStartTime = ref(Date.now())
-const readingTime = ref(0)
-
 onMounted(() => {
   // 加载阅读器设置
   appStore.loadReaderSettings()
@@ -2625,36 +2939,24 @@ onMounted(() => {
     // 在DOM更新后再初始化分页数据，确保文档数据已经更新
     initPagination()
   })
-  
-  // 开始计时
-  readingStartTime.value = Date.now()
-  readingTime.value = 0
 })
 
 // 生命周期 - 组件卸载时移除监听器
 onUnmounted(() => {
-  // 计算阅读时间
-  const sessionReadTime = Math.floor((Date.now() - readingStartTime.value) / 1000) // 转换为秒
-  
-  // 更新阅读历史的阅读时间和进度
-  if (currentDocument.value.content) {
-    // 找到对应的阅读历史记录
-    const existingHistory = appStore.readingHistory.find(item => 
-      item.document_id === currentDocument.value.id || item.content === currentDocument.value.content
-    )
+  // 记录当前页面的停留时间
+  ['original', 'simplified'].forEach(type => {
+    const currentPage = paginationState[type].currentPage
+    const timestamp = pageVisitTime.value[type].timestamp
     
-    if (existingHistory) {
-      // 累加阅读时间
-      existingHistory.readTime += sessionReadTime
-      // 更新最后阅读时间
-      existingHistory.lastRead = new Date().toISOString().slice(0, 19).replace('T', ' ')
-      // 更新阅读进度（使用当前页码）
-      existingHistory.readingProgress = Math.round((paginationState.original.currentPage / (paginationState.original.totalPages || 1)) * 100)
+    if (currentPage > 0 && timestamp > 0) {
+      const stayDuration = Math.floor((Date.now() - timestamp) / 1000)
       
-      // 保存到本地存储
-      saveReadingHistoryToStorage()
+      // 如果停留时间超过最小阅读时间，更新阅读进度
+      if (stayDuration >= MIN_READING_TIME) {
+        updateReadingProgress(type, currentPage, stayDuration)
+      }
     }
-  }
+  })
   
   document.removeEventListener('fullscreenchange', checkFullScreenStatus)
   
@@ -2991,7 +3293,7 @@ body {
   cursor: pointer;
   transition: all 0.3s;
   word-break: break-word;
-  background-color: rgba(82, 134, 105, 0.25); /* 浅灰色背景，区分意群 */
+  background-color: rgba(82, 134, 105, 0.25); /* 浅绿色背景，区分意群 */
   color: inherit; /* 继承文字颜色 */
   opacity: 1; /* 默认完全不透明 */
   font-size: inherit; /* 继承字体大小 */
@@ -3032,8 +3334,8 @@ body {
 
 /* 高亮意群样式 */
 .highlighted-segment {
-  background-color: rgba(255, 215, 0, 0.3) !important;
-  border: 1px solid #ffd700;
+ background-color: rgba(255, 215, 0, 0.3) !important;
+  border: none !important;        /* 移除所有边框，避免与阴影动画重叠 */
   animation: pulse 1s infinite;
 }
 
@@ -3132,6 +3434,7 @@ body {
   line-height: 1.4 !important;
   letter-spacing: normal !important;
   word-spacing: normal !important;
+  font-family: Arial, sans-serif !important;
 }
 
 .fullscreen-settings-panel h3 {

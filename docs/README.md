@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-中文文本阅读障碍辅助工具是一个基于Python 3.12 + FastAPI + Vue 3 + Element Plus开发的Web应用，专为中文阅读障碍用户设计，集成了Qwen2.5-3B模型（通过Ollama部署），提供12项核心阅读辅助功能。
+中文文本阅读障碍辅助工具是一个基于Python 3.12 + FastAPI + Vue 3 + Element Plus开发的Web应用，专为中文阅读障碍用户设计，集成了Qwen大模型（通过阿里云通义千问API调用），提供12项核心阅读辅助功能。
 
 ## 技术栈
 
@@ -10,11 +10,11 @@
 - Python 3.12
 - FastAPI 0.104.1
 - Uvicorn 0.24.0
-- Requests 2.31.0 (用于与Ollama API交互)
-- Ollama 0.15.4+
-- Qwen2.5-3B模型 (4位量化，通过Ollama部署)
+- Requests 2.32.4
 - MySQL 8.0
 - jieba (用于中文分词和词性标注)
+- dashscope 1.17.0 (阿里云通义千问SDK)
+- pyttsx3 2.90 (文本转语音)
 
 ### 前端
 - Vue 3.4.21+
@@ -37,7 +37,7 @@
    - 支持重新划分
 
 3. **阅读模式+语音朗读**
-   - 实时语音合成（使用浏览器Web Speech API）
+   - 实时语音合成（使用pyttsx3）
    - 文本高亮同步
    - 播放控制（播放/暂停/停止）
 
@@ -72,14 +72,15 @@
     - 基于规则和模型的内容筛选
     - 透明度区分主次
 
-11. **语义意群划分**
-    - 智能语义分析
-    - 意群划分
+11. **文本简化**
+    - 复杂文本自动简化
+    - 支持轻度/中度/深度三级简化
+    - 简化后的文本在独立面板显示
 
-12. **文本简化+词语释义查询**
-    - 复杂文本简化
+12. **词语释义查询**
     - 用户查询式词语释义
     - 详细的词语解释和例句
+    - 结合上下文提供准确解释
 
 ## 项目结构
 
@@ -89,15 +90,17 @@
 │   │   ├── core/            # 核心模块
 │   │   │   ├── config.py    # 配置文件
 │   │   │   ├── database.py  # 数据库配置
-│   │   │   ├── model_manager.py  # 模型管理器
-│   │   │   └── ollama_model_manager.py  # Ollama模型管理器
+│   │   │   ├── model_manager.py  # 模型管理器基类
+│   │   │   ├── qwen_model_manager.py  # Qwen模型管理器
+│   │   │   ├── ollama_model_manager.py  # Ollama模型管理器（备用）
+│   │   │   └── task_manager.py  # 任务管理器
 │   │   ├── models/          # 数据库模型
 │   │   ├── routes/          # API路由
 │   │   ├── schemas/         # Pydantic模型
 │   │   ├── services/        # 业务逻辑服务
 │   │   │   ├── text_processor.py  # 文本处理服务
 │   │   │   ├── file_service.py  # 文件服务
-│   │   │   ├── voice_service.py  # 语音服务
+│   │   │   ├── voice_service.py  # 语音服务（pyttsx3）
 │   │   │   └── auth_service.py  # 认证服务
 │   │   └── main.py          # 主应用入口
 │   ├── requirements.txt     # 依赖列表
@@ -125,7 +128,6 @@
 │   ├── 开发文档.md           # 开发文档
 │   └── 用户手册.md           # 用户手册
 ├── venv/                    # 虚拟环境
-├── docker-compose.yml       # Docker配置
 └── test_*.py                # 测试文件
 ```
 
@@ -139,21 +141,12 @@
    cd backend
    pip install -r requirements.txt --index-url https://pypi.tuna.tsinghua.edu.cn/simple
    ```
-3. 安装Ollama：
-   - 从官方网站下载并安装Ollama：https://ollama.com/download
-   - 启动Ollama服务
-   - 下载Qwen2.5-3B模型：
-     ```bash
-     ollama pull qwen2.5:3b-instruct-q4_K_M
-     ```
 
-4. 运行环境设置脚本：
-   ```bash
-   python setup_environment.py
-   ```
-   > 脚本功能：检测环境、验证Ollama服务、配置模型参数
+3. 配置阿里云通义千问API：
+   - 前往阿里云官网申请API Key：https://www.aliyun.com/product/dashscope
+   - 在`backend/app/core/config.py`中配置`QWEN_API_KEY`
 
-5. 启动后端服务：
+4. 启动后端服务：
    ```bash
    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
@@ -178,28 +171,16 @@
    ```sql
    CREATE DATABASE reading_assistant DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
    ```
-3. 配置.env文件中的数据库连接信息
+3. 配置`backend/app/core/config.py`中的数据库连接信息
 4. 启动应用时会自动创建数据库表
 
 ## 模型配置
 
-项目集成了Qwen2.5-3B模型，通过Ollama进行本地部署，针对4GB显存进行了特别优化：
+项目通过阿里云通义千问API调用Qwen大模型，无需本地部署模型：
 
-1. **模型版本**：4位量化版本 (q4_K_M)，显存占用约2GB
-2. **模型路径**：由Ollama管理，默认存储在 `D:\AI_model\blobs`
-3. **模型文件**：由Ollama自动管理，无需手动配置
-
-4. **模型下载**：
-   - 自动下载：通过Ollama命令下载
-     ```bash
-     ollama pull qwen2.5:3b-instruct-q4_K_M
-     ```
-   - 验证：运行 `ollama list` 确认模型已下载
-
-5. **Ollama配置**：
-   - 服务地址：http://localhost:11434
-   - 内存限制：自动管理，适合4GB显存设备
-   - 启动方式：Ollama服务会自动后台运行
+1. **API Key配置**：在`backend/app/core/config.py`中设置`QWEN_API_KEY`
+2. **模型名称**：`qwen-long`（长文本模型，适合文本处理任务）
+3. **API调用**：通过dashscope SDK进行调用，支持流式生成
 
 ## API文档
 
@@ -231,9 +212,10 @@
    npm run build
    ```
 
-2. 使用Docker部署（推荐）：
+2. 使用Gunicorn部署后端：
    ```bash
-   docker-compose up -d
+   cd backend
+   gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:8000
    ```
 
 ## 使用说明
@@ -256,12 +238,12 @@
 - 支持导出为TXT、PDF格式
 
 ### 2. 意群划分
-- 基于规则和Qwen2.5-3B模型的混合方法
-- 可配置的分块大小
+- 基于规则和Qwen大模型的混合方法
+- 可配置的分块大小（轻度/中度/高度划分）
 - 支持重新划分
 
 ### 3. 阅读模式+语音朗读
-- 实时语音合成（使用浏览器Web Speech API）
+- 实时语音合成（使用pyttsx3）
 - 文本高亮同步
 - 播放控制（播放/暂停/停止）
 - 支持调整语速和音量
@@ -297,18 +279,18 @@
 - 错落排版（轻微上下错位，适合阅读障碍用户）
 
 ### 10. 主次内容区分
-- 基于规则和Qwen2.5-3B模型的内容筛选
+- 基于规则和Qwen大模型的内容筛选
 - 通过透明度区分主次内容
 
-### 11. 语义意群划分
-- 智能分析文本语义
-- 将文本划分为有意义的意群
-- 提高阅读效率
+### 11. 文本简化
+- 复杂文本自动简化（基于规则和Qwen大模型）
+- 支持轻度/中度/深度三级简化
+- 简化后的文本在独立面板显示，方便对比阅读
 
-### 12. 文本简化+词语释义查询
-- 复杂文本自动简化（基于规则和Qwen2.5-3B模型）
+### 12. 词语释义查询
 - 用户查询式词语释义
 - 详细的词语解释和例句
+- 结合上下文提供准确解释
 
 ## 开发说明
 
@@ -340,32 +322,20 @@ pytest tests/integration/ -v
 
 ## 性能优化
 
-1. **模型优化**：
-   - 4位量化技术 (q4_K_M)，显存占用约2GB
-   - 通过Ollama管理，自动优化模型加载和推理
-   - 平衡速度和精度，适合4GB显存设备
+1. **API调用优化**：
+   - 实现API调用缓存，减少重复请求
+   - 优化API调用参数，提高生成质量和速度
+   - 实现请求重试机制，提高API调用可靠性
 
-2. **内存管理**：
-   - 由Ollama自动管理内存，无需手动配置
-   - 智能设备分配，优先使用GPU
-   - 自动内存清理，优化长期运行
-
-3. **推理优化**：
-   - 流式推理支持，减少等待时间
-   - 通过Ollama API进行高效推理
-   - 批量处理优化，提高并发性能
-
-4. **文本处理优化**：
+2. **文本处理优化**：
    - 实现缓存机制，提高重复文本处理速度
-   - 长文本分块处理，每块500字
-   - 基于规则的快速处理，对短文本（<200字）进行快速处理
+   - 长文本分块处理，每块1200字
+   - 基于规则的快速处理，对短文本（<1000字）进行快速处理
    - 混合处理策略：短文本使用规则方法，长文本使用模型方法
 
-5. **设备适配**：
-   - GPU优先（需≥2GB显存）
-   - CPU自动适配（需≥8GB内存）
+3. **设备适配**：
+   - 无需GPU，仅需CPU运行
    - 跨平台支持（Windows/macOS/Linux）
-   - Ollama服务自动后台运行
 
 ## 安全注意事项
 
@@ -374,6 +344,7 @@ pytest tests/integration/ -v
 3. 定期更新依赖包
 4. 配置合适的文件大小限制
 5. 实现用户权限控制
+6. 保护API Key，避免泄露
 
 ## 许可证
 
@@ -391,13 +362,13 @@ MIT License
 ### v1.0.0 (2026-02-XX)
 - 初始版本发布
 - 实现12项核心阅读辅助功能
-- 集成Qwen2.5-3B模型（通过Ollama部署）
+- 集成Qwen大模型（通过阿里云通义千问API）
 - 支持文本处理、文件上传/导出、词语释义等功能
 - 实现缓存机制和长文本分块处理
+- 使用pyttsx3实现文本转语音功能
 
 ### v1.0.1 (2026-02-XX)
 - 优化文本处理速度
 - 改进词语释义功能，改为用户查询式
 - 完善模型交互逻辑
-- 优化内存管理
 - 更新项目文档

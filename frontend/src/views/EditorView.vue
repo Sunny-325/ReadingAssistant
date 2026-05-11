@@ -283,6 +283,7 @@ const processText = async () => {
               content: content.value,
               processedInEditor: true,
               fromDocumentRecord: false,
+              processingSettings: processingOptions,  // 保存处理设置到 currentDocument
               ...processedResult
             })
             
@@ -417,6 +418,7 @@ const processText = async () => {
                 content: content.value,
                 processedInEditor: true,
                 fromDocumentRecord: false,
+                processingSettings: processingOptions,  // 保存处理设置到 currentDocument
                 ...processedResult
               })
               
@@ -432,6 +434,7 @@ const processText = async () => {
                 simplifiedSegments: JSON.stringify(processedResult.simplifiedSegments),
                 pos_tags: JSON.stringify(processedResult.pos_tags),
                 simplified_pos_tags: JSON.stringify(processedResult.simplified_pos_tags),
+                processing_settings_snapshot: JSON.stringify(processingOptions),  // 保存处理设置
                 reading_time: 0,
                 last_read_at: new Date().toISOString()
               })
@@ -494,6 +497,7 @@ const processText = async () => {
           content: content.value,
           processedInEditor: true,
           fromDocumentRecord: false,
+          processingSettings: processingOptions,  // 保存处理设置到 currentDocument
           ...processedResult
         })
         
@@ -509,6 +513,7 @@ const processText = async () => {
           simplifiedSegments: JSON.stringify(processedResult.simplifiedSegments),
           pos_tags: JSON.stringify(processedResult.pos_tags),
           simplified_pos_tags: JSON.stringify(processedResult.simplified_pos_tags),
+          processing_settings_snapshot: JSON.stringify(processingOptions),  // 保存处理设置
           reading_time: 0,
           last_read_at: new Date().toISOString()
         })

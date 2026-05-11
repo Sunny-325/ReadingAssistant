@@ -547,7 +547,11 @@ export const useAppStore = defineStore('app', {
           // 解析处理设置
           processingSettings: parseJsonOrReturn(item.processing_settings_snapshot, {}),
           readTime: item.reading_time || 0,
-          lastRead: item.last_read_at || item.created_at
+          reading_time: item.reading_time || 0,  // 保持后端字段名
+          lastRead: item.last_read_at || item.created_at,
+          last_read_at: item.last_read_at || item.created_at,  // 保持后端字段名
+          reading_progress: item.reading_progress || 0.0,  // 添加阅读进度
+          readingProgress: (item.reading_progress || 0.0)  // 兼容前端驼峰命名
         }))
         // 更新本地存储，使用与用户相关的键
         const storageKey = `readingHistory_${this.user.id}`
