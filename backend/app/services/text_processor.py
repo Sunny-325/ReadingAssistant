@@ -14,6 +14,9 @@ from typing import Dict, List, Tuple, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 
+# 导入参数管理器
+from ..core.model_params_manager import ModelParamsManager
+
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -48,6 +51,47 @@ class TextProcessor:
         # 缓存清理
         self._cache = {}
         self._max_cache_size = 100
+        
+        # 预处理配置
+        self.preprocessing_config = {
+            'remove_extra_spaces': True,      # 去除多余空格
+            'remove_extra_newlines': True,    # 去除多余换行
+            'normalize_punctuation': True,    # 规范化标点符号
+            'remove_control_chars': True,     # 去除控制字符
+            'normalize_whitespace': True      # 规范化空白字符
+        }
+    
+    def preprocess_text(self, text: str) -> str:
+        """
+        文本预处理（已简化）
+        文本清洗已在保存文档时完成，这里只做简单的验证
+        
+        :param text: 文本
+        :return: 原文本
+        """
+        # 文本清洗已在文档保存时由 TextCleaner 完成
+        # 这里直接返回文本，不再重复处理
+        return text
+    
+    def _fullwidth_to_halfwidth(self, text: str) -> str:
+        """
+        将全角字符转换为半角字符
+        
+        :param text: 包含全角字符的文本
+        :return: 转换后的文本
+        """
+        result = []
+        for char in text:
+            code = ord(char)
+            # 全角空格
+            if code == 0x3000:
+                result.append(' ')
+            # 其他全角字符（ASCII范围内）
+            elif 0xFF01 <= code <= 0xFF5E:
+                result.append(chr(code - 0xFEE0))
+            else:
+                result.append(char)
+        return ''.join(result)
     
     async def process_text(self, text: str, options: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -90,16 +134,11 @@ class TextProcessor:
         """
         处理短文本（小于等于1000字）
         
-        :param text: 原始文本
+        :param text: 原始文本（已清洗）
         :param options: 处理选项
         :return: 处理结果
         """
-        # 检查缓存
-        cache_key = f"process_{hash(text)}_{hash(str(options))}"
-        if cache_key in self._cache:
-            logger.info(f"从缓存获取处理结果")
-            return self._cache[cache_key]
-        
+        # 文本已在保存文档时清洗，直接使用
         result = {
             "original_text": text,
             "processed_text": text,
@@ -145,8 +184,8 @@ class TextProcessor:
         
         # 3. 文本简化
         if options.get("enableSimplify", False):
-            # 保存原始处理后的文本
-            original_processed = result["processed_text"]
+            # 保存原始文本
+            original_processed = text
             # 获取简化级别，默认为1（轻度简化）
             simplify_level = options.get("simplifyLevel", 1)
             logger.info(f"文本简化级别: {simplify_level}")
@@ -198,7 +237,9 @@ class TextProcessor:
                 # 如果简化后的文本与原始文本相同，尝试使用更简单的方法
                 try:
                     prompt = f"请用更简单的语言重新表达以下内容，保持原意但更易懂：\n\n{original_processed}"
-                    simpler_response = self.model_manager.generate_text(prompt, max_length=1024)
+                    # 使用文本简化专用参数
+                    simplify_params = ModelParamsManager.get_simplify_params()
+                    simpler_response = self.model_manager.generate_text(prompt, **simplify_params)
                     if simpler_response and simpler_response != original_processed:
                         result["simplifiedContent"] = simpler_response
                 except Exception as e:
@@ -233,18 +274,26 @@ class TextProcessor:
                 # 如果没有启用意群划分，清空简化文本的segments
                 result["simplified_segments"] = []
         
-        # 清理缓存
-        self._cleanup_cache()
-        
         # 4. 词性标注 - 原始文本
         if options.get("pos_tagging", False):
-            result["metadata"]["pos_tags"] = self.tag_pos(result["processed_text"])
-            # 同时存储在顶层，方便前端访问
-            result["pos_tags"] = result["metadata"]["pos_tags"]
+            # 为每个segment单独进行词性标注（位置基于segment内部）
+            for seg in result["segments"]:
+                seg_text = seg.get("text", "")
+                if seg_text:
+                    seg["pos_tags"] = self.tag_pos(seg_text)
+            
+            # 同时保留全局词性标注（向后兼容）
+            result["pos_tags"] = self.tag_pos(result["processed_text"])
             
             # 为简化文本生成词性标注（如果有简化文本）
             if result.get("simplifiedContent"):
                 try:
+                    # 为简化文本的每个segment单独进行词性标注
+                    for seg in result["simplified_segments"]:
+                        seg_text = seg.get("text", "")
+                        if seg_text:
+                            seg["pos_tags"] = self.tag_pos(seg_text)
+                    
                     result["simplified_pos_tags"] = self.tag_pos(result["simplifiedContent"])
                     logger.info(f"简化文本词性标注完成：pos_tags={len(result['simplified_pos_tags'])}")
                 except Exception as e:
@@ -252,9 +301,6 @@ class TextProcessor:
                     result["simplified_pos_tags"] = []
             else:
                 result["simplified_pos_tags"] = []
-        
-        # 缓存结果
-        self._cache[cache_key] = result
         
         return result
     
@@ -266,12 +312,7 @@ class TextProcessor:
         :param options: 处理选项
         :return: 处理结果
         """
-        # 检查缓存
-        cache_key = f"long_text_{hash(text)}_{hash(str(options))}"
-        if cache_key in self._cache:
-            logger.info(f"从缓存获取长文本处理结果")
-            return self._cache[cache_key]
-        
+        # 预处理长文本
         result = {
             "original_text": text,
             "processed_text": text,
@@ -423,11 +464,24 @@ class TextProcessor:
             
             # 词性标注 - 原始文本
             if options.get("pos_tagging", False):
+                # 为每个segment单独进行词性标注（位置基于segment内部）
+                for seg in result["segments"]:
+                    seg_text = seg.get("text", "")
+                    if seg_text:
+                        seg["pos_tags"] = self.tag_pos(seg_text)
+                
+                # 同时保留全局词性标注（向后兼容）
                 result["pos_tags"] = self.tag_pos(text)
                 
                 # 为简化文本生成词性标注（如果有简化文本）
                 if result.get("simplifiedContent"):
                     try:
+                        # 为简化文本的每个segment单独进行词性标注
+                        for seg in result["simplified_segments"]:
+                            seg_text = seg.get("text", "")
+                            if seg_text:
+                                seg["pos_tags"] = self.tag_pos(seg_text)
+                        
                         result["simplified_pos_tags"] = self.tag_pos(result["simplifiedContent"])
                         logger.info(f"简化文本词性标注完成：pos_tags={len(result['simplified_pos_tags'])}")
                     except Exception as e:
@@ -435,9 +489,6 @@ class TextProcessor:
                         result["simplified_pos_tags"] = []
                 else:
                     result["simplified_pos_tags"] = []
-            
-            # 缓存结果
-            self._cache[cache_key] = result
             
             logger.info(f"长文本处理完成，长度: {len(text)}, 生成 {len(all_segments)} 个意群")
             logger.info(f"文本处理完成，结果包含: {list(result.keys())}")
@@ -472,12 +523,6 @@ class TextProcessor:
             }
             level_name, level_desc, chunk_size = level_descriptions.get(chunk_level, level_descriptions[2])
             
-            # 检查缓存
-            cache_key = f"segment_{hash(text)}_{chunk_level}"
-            if cache_key in self._cache:
-                logger.info(f"从缓存获取意群划分结果")
-                return self._cache[cache_key]
-            
             # 根据chunk_level动态设置提示词中的划分粒度
             level_prompts = {
                 1: "轻度划分，每意群约6-7个词，适合快速阅读",
@@ -486,8 +531,8 @@ class TextProcessor:
             }
             level_prompt = level_prompts.get(chunk_level, level_prompts[2])
             
-            # 精简的提示词：只包含必要规则
-            prompt = f"""将以下文本按语义划分为意群，每个意群占一行。
+            # 使用JSON格式输出，便于结构化解析
+            prompt = f"""将以下文本按语义划分为意群。
 
 规则：
 1. 语义连贯优先，主谓/动宾结构不拆分
@@ -499,93 +544,128 @@ class TextProcessor:
 {text}
 
 === 严格输出要求 ===
-- 【强制】仅输出划分结果，不输出任何其他内容
+- 【强制】仅输出JSON格式结果，不输出任何其他内容
 - 【禁止】不要输出解释、说明、思考过程、开场白、结束语
 - 【禁止】不要输出"好的"、"以下是"、"划分结果"、"完成"等任何前缀或后缀文字
 - 【禁止】不要添加任何额外注释或标记
-- 【格式】每行一个意群，直接输出文字内容，无编号、无序号
+- 【格式】严格按照JSON格式输出：{{"segments":["意群1","意群2",...]}}
 
 输出："""
             
-            response = self.model_manager.generate_text(prompt, max_length=4096, temperature=0.2)
+            # 使用意群划分专用参数
+            segment_params = ModelParamsManager.get_segment_params()
+            response = self.model_manager.generate_text(prompt, **segment_params)
             
             if response:
-                # 解析模型输出
+                # 解析模型输出（JSON格式）
                 # 记录当前在原始文本中的位置
                 current_pos = 0
-                
-                # 过滤掉模型的解释性文字，只保留实际的意群
-                import re
-                # 移除可能的HTML标签
-                response = re.sub(r'<[^>]+>', '', response)
-                
-                # 过滤掉解释性文字和规则说明
-                # 查找"划分结果"或"结果："之后的内容
-                result_start = response.find("划分结果")
-                if result_start == -1:
-                    result_start = response.find("结果：")
-                if result_start == -1:
-                    result_start = response.find("结果:")
-                if result_start != -1:
-                    response = response[result_start:]
-                
-                # 按行分割
-                lines = response.split('\n')
                 valid_segments = []
                 
-                # 定义需要过滤的关键词
-                filter_prefixes = [
-                    '好的', '以下是', '划分结果', '分析：', '示例', '【', '根据',
-                    '规则', '要求', '原则', '关键', '正确', '错误', '语义', '连贯性',
-                    '主谓', '动宾', '划分程度', '处理结果', '总结：', '说明：',
-                    '返回', '输出', '完成', '处理中', '正在', '开始', '结束',
-                    '不要输出', '等前缀', '每行一个意群', '直接输出', '文字即可',
-                    '重要：', '输出格式', '仅输出', '不要输出', '不要包含'
-                ]
+                # 移除可能的HTML标签和多余空格
+                import re
+                response = re.sub(r'<[^>]+>', '', response)
+                response = response.strip()
                 
-                for line in lines:
-                    line = line.strip()
-                    if line:
-                        # 过滤掉解释性文字
-                        is_filtered = False
-                        
-                        # 检查行是否以过滤前缀开头
-                        for prefix in filter_prefixes:
-                            if line.startswith(prefix):
-                                is_filtered = True
-                                break
-                        
-                        # 如果还没被过滤，检查行是否包含这些关键词（处理引号包围的情况）
-                        if not is_filtered:
-                            filter_keywords = [
-                                '不要输出', '等前缀', '每行一个意群', '直接输出',
-                                '文字即可', '输出格式', '仅输出', '重要：', '不要包含'
-                            ]
-                            for keyword in filter_keywords:
-                                if keyword in line:
+                # 尝试JSON解析（优先方式）
+                json_parsed = False
+                try:
+                    import json
+                    result = json.loads(response)
+                    if isinstance(result, dict) and "segments" in result:
+                        for seg_text in result["segments"]:
+                            seg_text = str(seg_text).strip()
+                            if seg_text:
+                                valid_segments.append(seg_text)
+                        json_parsed = True
+                        logger.info("意群划分JSON解析成功")
+                except json.JSONDecodeError:
+                    logger.warning("JSON解析失败，尝试提取JSON对象")
+                
+                # 如果JSON解析失败，尝试提取第一个完整的JSON对象
+                if not json_parsed:
+                    json_str = self._extract_first_valid_json(response)
+                    if json_str:
+                        try:
+                            result = json.loads(json_str)
+                            if isinstance(result, dict) and "segments" in result:
+                                for seg_text in result["segments"]:
+                                    seg_text = str(seg_text).strip()
+                                    if seg_text:
+                                        valid_segments.append(seg_text)
+                                json_parsed = True
+                                logger.info("意群划分JSON提取成功")
+                        except json.JSONDecodeError:
+                            logger.warning("JSON提取也失败")
+                
+                # 如果JSON解析都失败，回退到基于换行符的解析
+                if not json_parsed:
+                    logger.debug("回退到基于换行符的解析")
+                    # 查找"划分结果"或"结果："之后的内容
+                    result_start = response.find("划分结果")
+                    if result_start == -1:
+                        result_start = response.find("结果：")
+                    if result_start == -1:
+                        result_start = response.find("结果:")
+                    if result_start != -1:
+                        response = response[result_start:]
+                    
+                    # 按行分割
+                    lines = response.split('\n')
+                    
+                    # 定义需要过滤的关键词
+                    filter_prefixes = [
+                        '好的', '以下是', '划分结果', '分析：', '示例', '【', '根据',
+                        '规则', '要求', '原则', '关键', '正确', '错误', '语义', '连贯性',
+                        '主谓', '动宾', '划分程度', '处理结果', '总结：', '说明：',
+                        '返回', '输出', '完成', '处理中', '正在', '开始', '结束',
+                        '不要输出', '等前缀', '每行一个意群', '直接输出', '文字即可',
+                        '重要：', '输出格式', '仅输出', '不要输出', '不要包含'
+                    ]
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if line:
+                            # 过滤掉解释性文字
+                            is_filtered = False
+                            
+                            # 检查行是否以过滤前缀开头
+                            for prefix in filter_prefixes:
+                                if line.startswith(prefix):
                                     is_filtered = True
                                     break
-                        
-                        # 过滤只包含特殊字符的行
-                        if re.match(r'^[*#=-_~`]+$', line):
-                            is_filtered = True
-                        
-                        # 过滤只有数字和标点的行
-                        if re.match(r'^\d*[。，！？；：、]*$', line):
-                            is_filtered = True
-                        
-                        if not is_filtered:
-                            # 移除可能的序号前缀，如"1. "、"2. "、"①"等
-                            line = re.sub(r'^\d+\.\s*', '', line)
-                            line = re.sub(r'^[①②③④⑤⑥⑦⑧⑨⑩]+[\s.]*', '', line)
-                            line = re.sub(r'^[-•●○◆◇■□▲△▼▽]+[\s]*', '', line)
                             
-                            # 移除首尾的引号
-                            line = re.sub(r'^["\']+', '', line)
-                            line = re.sub(r'["\']+$', '', line)
+                            # 如果还没被过滤，检查行是否包含这些关键词
+                            if not is_filtered:
+                                filter_keywords = [
+                                    '不要输出', '等前缀', '每行一个意群', '直接输出',
+                                    '文字即可', '输出格式', '仅输出', '重要：', '不要包含'
+                                ]
+                                for keyword in filter_keywords:
+                                    if keyword in line:
+                                        is_filtered = True
+                                        break
                             
-                            if line.strip():
-                                valid_segments.append(line)
+                            # 过滤只包含特殊字符的行
+                            if re.match(r'^[*#=-_~`]+$', line):
+                                is_filtered = True
+                            
+                            # 过滤只有数字和标点的行
+                            if re.match(r'^\d*[。，！？；：、]*$', line):
+                                is_filtered = True
+                            
+                            if not is_filtered:
+                                # 移除可能的序号前缀
+                                line = re.sub(r'^\d+\.\s*', '', line)
+                                line = re.sub(r'^[①②③④⑤⑥⑦⑧⑨⑩]+[\s.]*', '', line)
+                                line = re.sub(r'^[-•●○◆◇■□▲△▼▽]+[\s]*', '', line)
+                                
+                                # 移除首尾的引号
+                                line = re.sub(r'^["\']+', '', line)
+                                line = re.sub(r'["\']+$', '', line)
+                                
+                                if line.strip():
+                                    valid_segments.append(line)
                 
                 for i, segment in enumerate(valid_segments):
                         
@@ -1105,38 +1185,48 @@ class TextProcessor:
         segments = result["segments"]
         
         try:
-            # 检查缓存
-            # 使用params参数构建缓存键，确保不同参数有不同缓存
-            cache_key = f"prioritize_{hash(text)}_{hash(str(params))}"
-            if cache_key in self._cache:
-                logger.info(f"从缓存获取主次内容区分结果")
-                result["segments"] = self._cache[cache_key]
-                return result
-            
             # 使用模型识别主次内容
-            # 从params中获取优先级参数
-            importance_threshold = params.get("importance_threshold", 0.5)
-            min_secondary_ratio = params.get("min_secondary_ratio", 0.3)
+            # 采用固定阈值0.5 + 比例约束策略
+            # 从params中获取参数（预留接口，实际使用固定值）
+            min_secondary_ratio = params.get("min_secondary_ratio", 0.3)  # 至少30%次要内容
             
-            # 简化提示词，只传递意群ID和文本，不重复传递完整文本
             # 构建简洁的意群列表
             seg_list = "\n".join([f"{seg['id']}. {seg['text'][:50]}..." if len(seg['text']) > 50 else f"{seg['id']}. {seg['text']}" for seg in segments])
             
-            prompt = f"""分析意群重要性。
+            # 优化的提示词，包含明确的评分标准
+            prompt = f"""你是一个文本分析专家，需要帮助阅读障碍者识别文章中的核心内容。
 
-意群：
+【任务背景】
+为阅读障碍者优化阅读体验，需要将文章内容区分"核心信息"和"辅助信息"
+
+【评分标准】
+请对每个意群给出0-1的重要性评分：
+- 0.8-1.0：核心信息，读者必须理解的关键内容
+  （如：主题句、核心观点、重要结论、数据事实）
+- 0.5-0.7：重要信息，对理解有帮助
+  （如：解释说明、例证、补充细节）
+- 0.2-0.4：辅助信息，非必要内容
+  （如：举例、重复表述、过渡句、客套话）
+- 0.0-0.1：可有可无的修饰性内容
+  （如：感叹词、重复强调、背景介绍、仪式性表达）
+
+【评分原则】
+- 根据意群的实际语义重要性评分，不受其他意群影响
+- 同一篇文章中，核心信息应高于辅助信息
+- 不确定时按语义判断，不刻意压低或抬高分数
+
+意群列表：
 {seg_list}
 
-=== 严格输出要求 ===
-- 【强制】仅输出JSON格式结果，不输出任何其他内容
-- 【禁止】不要输出解释、说明、思考过程、开场白、结束语
-- 【禁止】不要输出"好的"、"以下是"、"分析结果"、"完成"等任何前缀或后缀文字
-- 【禁止】不要添加任何额外注释或标记
-- 【格式】严格按照示例格式输出：{{"segments":[{{"id":数字,"importance":0-1之间的小数}}]}}
+【输出要求】
+- 仅输出JSON格式结果，不要任何其他文字
+- 格式：{{"segments":[{{"id":数字,"importance":小数}}]}}
 
 输出："""
             
-            response = self.model_manager.generate_text(prompt, max_length=2048, temperature=0.3)
+            # 使用主次内容区分专用参数
+            analyze_params = ModelParamsManager.get_analyze_params()
+            response = self.model_manager.generate_text(prompt, **analyze_params)
             
             if response:
                 # 尝试从响应中提取JSON
@@ -1203,59 +1293,53 @@ class TextProcessor:
             total_importance = sum(seg.get("importance", 1.0) for seg in segments)
             avg_importance = total_importance / len(segments) if segments else 1.0
             
-            # 优化的主次内容区分算法
-            # 1. 先计算所有意群的重要性分布
+            # 主次内容区分算法
+            # 统一策略：固定阈值0.5 + 比例约束调整
             importance_values = [seg.get("importance", 1.0) for seg in segments]
             if importance_values:
-                # 计算标准差，了解重要性分布的离散程度
-                std_importance = np.std(importance_values) if len(importance_values) > 1 else 0
+                # 计算标准差判断评分分布
+                import math
+                mean = sum(importance_values) / len(importance_values)
+                variance = sum((x - mean) ** 2 for x in importance_values) / len(importance_values)
+                std_dev = math.sqrt(variance)
+                logger.info(f"重要性评分标准差: {std_dev:.4f}")
                 
-                # 2. 动态调整阈值，基于重要性分布
-                if std_importance < 0.2:  # 分布过于集中
-                    # 强制进行更明显的区分
-                    sorted_indices = np.argsort(importance_values)
-                    # 确保至少有10%的次要内容
-                    secondary_count = max(1, int(len(segments) * 0.1))
-                    for i in range(secondary_count):
-                        if i < len(sorted_indices):
-                            segments[sorted_indices[i]]["is_primary"] = False
-                    # 确保至少有60%的主要内容
-                    primary_count = max(int(len(segments) * 0.6), len(segments) - secondary_count)
-                    for i in range(primary_count):
-                        if i < len(sorted_indices):
-                            segments[sorted_indices[-i-1]]["is_primary"] = True
-                else:
-                    # 正常情况下使用绝对阈值
-                    secondary_count = 0
-                    for segment in segments:
-                        importance = segment.get("importance", 1.0)
-                        if importance < importance_threshold:
-                            segment["is_primary"] = False
-                            secondary_count += 1
-                        else:
-                            segment["is_primary"] = True
+                # 1. 统一使用固定阈值0.5进行初步划分
+                for segment in segments:
+                    segment["is_primary"] = (segment.get("importance", 1.0) >= 0.5)
+                
+                # 2. 统计划分结果
+                primary_count = sum(1 for seg in segments if seg.get("is_primary", True))
+                max_primary = int(len(segments) * 0.7)
+                
+                # 3. 判断是否需要调整
+                # 条件：评分分布过于集中(σ < 0.2) 且 主要内容比例已经很高(> 70%)
+                # 区分度明显时(σ ≥ 0.2) 或 主要内容≤70%时，保留模型的原始判断
+                need_adjust = (std_dev < 0.2) and (primary_count > max_primary)
+                
+                if need_adjust:
+                    logger.info("评分分布过于集中(σ < 0.2)且主要内容超过70%，按重要性排序截断到前70%")
                     
-                    # 确保有足够的次要内容
-                    if secondary_count < max(1, int(len(segments) * min_secondary_ratio)):
-                        # 按importance排序
-                        sorted_segments = sorted(enumerate(segments), key=lambda x: x[1].get("importance", 1.0))
-                        # 计算需要额外标记的次要内容数量
-                        needed = max(1, int(len(segments) * min_secondary_ratio)) - secondary_count
-                        # 标记额外的次要内容
-                        for i in range(secondary_count, secondary_count + needed):
-                            if i < len(sorted_segments):
-                                idx = sorted_segments[i][0]
-                                segments[idx]["is_primary"] = False
-                                secondary_count += 1
-                        logger.info(f"强制标记了{needed}个意群为次要内容")
+                    # 按重要性从高到低排序所有意群
+                    sorted_segments = sorted(enumerate(segments), key=lambda x: x[1].get("importance", 1.0), reverse=True)
+                    # 重置所有为次要
+                    for segment in segments:
+                        segment["is_primary"] = False
+                    # 保留评分最高的前70%作为主要内容
+                    for i in range(max_primary):
+                        if i < len(sorted_segments):
+                            idx = sorted_segments[i][0]
+                            segments[idx]["is_primary"] = True
+                    primary_count = max_primary
             else:
                 # 如果没有重要性值，全部标记为主要内容
                 for segment in segments:
                     segment["is_primary"] = True
             
-            # 缓存结果（只缓存segments部分，避免缓存整个result导致字段缺失）
-            self._cache[cache_key] = segments
-            logger.info(f"主次内容区分完成，平均重要性: {avg_importance:.2f}")
+            # 最终统计
+            final_primary = sum(1 for seg in segments if seg.get("is_primary", True))
+            final_secondary = len(segments) - final_primary
+            logger.info(f"主次内容区分完成：主要内容{final_primary}个({final_primary/len(segments)*100:.0f}%)，次要内容{final_secondary}个({final_secondary/len(segments)*100:.0f}%)，平均重要性: {avg_importance:.2f}")
             
         except Exception as e:
             logger.error(f"主次内容区分失败: {e}")
@@ -1331,22 +1415,56 @@ class TextProcessor:
         :return: 简化后的文本
         """
         try:
-            # 检查缓存
-            cache_key = f"simplify_{level}_{hash(text)}"
-            if cache_key in self._cache:
-                logger.info(f"从缓存获取简化文本")
-                return self._cache[cache_key]
-            
-            # 根据级别生成不同的prompt（精简版）
+            # 根据级别生成不同的prompt（优化版：包含规则和专属示例）
             level_desc = {
-                1: "轻度简化：替换书面语为口语，保持句子结构",
-                2: "中度简化：替换复杂词汇，拆分长句，删除冗余",
-                3: "深度简化：保留核心信息，所有句子控制在15字以内"
+                1: "轻度简化：替换书面语为口语，保持原句结构和完整语义",
+                2: "中度简化：替换复杂词汇，拆分长句，删除冗余修饰",
+                3: "深度简化：只保留核心信息，所有句子控制在15字以内"
             }
             
-            prompt = f"""简化文本{level_desc[level]}，仅输出结果：{text}"""
+            # 为每个级别设计专属示例，体现不同简化程度
+            level_examples = {
+                1: """示例：
+输入：人工智能技术的快速发展正在深刻地改变着我们日常生活的方方面面。
+输出：人工智能技术发展很快，正在深刻改变我们的日常生活。
+
+输入：由于受到全球气候变化的影响，极端天气事件的发生频率呈现出明显上升的趋势。
+输出：因为受到全球气候变化的影响，极端天气发生得越来越频繁了。""",
+                2: """示例：
+输入：人工智能技术的快速发展正在深刻地改变着我们日常生活的方方面面。
+输出：人工智能发展很快，改变了我们的日常生活。
+
+输入：由于受到全球气候变化的影响，极端天气事件的发生频率呈现出明显上升的趋势。
+输出：受气候变化影响，极端天气越来越频繁。""",
+                3: """示例：
+输入：人工智能技术的快速发展正在深刻地改变着我们日常生活的方方面面。
+输出：人工智能改变生活。
+
+输入：由于受到全球气候变化的影响，极端天气事件的发生频率呈现出明显上升的趋势。
+输出：气候变化导致极端天气增多。"""
+            }
             
-            response = self.model_manager.generate_text(prompt, max_length=2048, temperature=0.3, top_p=0.9)
+            # 优化后的提示词：包含规则说明和级别专属示例
+            # 通义千问在少样本学习且提示语包含规则时表现最佳
+            prompt = f"""请将以下文本进行{level_desc[level]}。
+
+规则：
+1. 必须保持原意不变，不得增减信息
+2. 使用简单易懂的词汇和短句
+3. 使用适当的标点符号和段落分隔，确保可读性
+4. 避免使用专业术语和复杂句式
+5. 直接输出简化结果，不添加任何额外解释
+
+{level_examples[level]}
+
+文本：
+{text}
+
+输出："""
+            
+            # 使用文本简化专用参数
+            simplify_params = ModelParamsManager.get_simplify_params()
+            response = self.model_manager.generate_text(prompt, **simplify_params)
             
             if response:
                 # 清理响应中的多余内容
@@ -1359,8 +1477,6 @@ class TextProcessor:
                         # 如果没有标点符号，添加句号
                         simplified += "。"
                     
-                    # 缓存结果
-                    self._cache[cache_key] = simplified
                     logger.info(f"文本简化成功（级别{level}），原文长度: {len(text)}, 简化后长度: {len(simplified)}")
                     return simplified
             
@@ -1394,14 +1510,55 @@ class TextProcessor:
             
             # 计算每个词的正确位置
             current_pos = 0
+            
             for word, flag in words:
-                # 查找当前词在文本中的正确位置
-                start_pos = text.find(word, current_pos)
+                # 处理空词的情况
+                if not word:
+                    continue
+                    
+                # 处理纯空白字符的情况
+                if not word.strip():
+                    current_pos += len(word)
+                    continue
+                    
+                # 确保当前位置不超过文本长度
+                if current_pos >= len(text):
+                    break
+                    
+                # 精确匹配：从current_pos开始，检查是否与词匹配
+                # 如果不匹配，向前查找最近的匹配位置
+                start_pos = -1
+                
+                # 首先尝试精确匹配
+                if text[current_pos:current_pos+len(word)] == word:
+                    start_pos = current_pos
+                else:
+                    # 如果不匹配，在合理范围内查找
+                    search_range = min(len(word) * 2, 10)
+                    start_pos = text.find(word, max(0, current_pos - search_range), current_pos + search_range)
+                    
                 if start_pos == -1:
-                    # 如果找不到，使用当前位置
+                    # 如果还是找不到，使用当前位置
                     start_pos = current_pos
                 
                 end_pos = start_pos + len(word)
+                
+                # 确保不超出文本范围
+                if end_pos > len(text):
+                    end_pos = len(text)
+                
+                # 检查词是否与文本中实际内容匹配
+                actual_text = text[start_pos:end_pos]
+                if actual_text != word:
+                    # 如果不匹配，记录警告并跳过
+                    logger.warning(f"词性标注位置不匹配: 期望'{word}'，实际'{actual_text}'，位置{start_pos}-{end_pos}")
+                    current_pos = end_pos
+                    continue
+                
+                # 标点符号不生成标注
+                if all(c in '，。！？、；：""''（）【】《》｛｝［］〔〕—… \t\n' for c in word):
+                    current_pos = end_pos
+                    continue
                 
                 pos_tags.append({
                     "word": word,
@@ -1411,13 +1568,22 @@ class TextProcessor:
                     "end_pos": end_pos
                 })
                 
-                # 更新当前位置
+                # 更新当前位置（使用实际词的结束位置）
                 current_pos = end_pos
         
         except Exception as e:
             logger.error(f"词性标注失败: {e}")
         
-        return pos_tags
+        # 去重：移除重复的标注（相同位置和相同词）
+        seen = set()
+        unique_tags = []
+        for tag in pos_tags:
+            key = (tag['start_pos'], tag['end_pos'], tag['word'])
+            if key not in seen:
+                seen.add(key)
+                unique_tags.append(tag)
+        
+        return unique_tags
     
     def get_word_definition(self, word: str, context: str = "") -> Dict[str, Any]:
         """

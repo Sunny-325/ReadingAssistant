@@ -95,6 +95,51 @@ export const getUserInfo = async () => {
   }
 }
 
+export const logout = async () => {
+  try {
+    const response = await apiClient.post('/auth/logout')
+    return response.data
+  } catch (error) {
+    console.error('退出登录失败:', error)
+    throw error
+  }
+}
+
+export const deleteAccount = async () => {
+  try {
+    const response = await apiClient.delete('/auth/account')
+    return response.data
+  } catch (error) {
+    console.error('注销账号失败:', error)
+    throw error
+  }
+}
+
+export const updateUsername = async (newUsername) => {
+  try {
+    const response = await apiClient.put('/auth/update-username', {
+      new_username: newUsername
+    })
+    return response.data
+  } catch (error) {
+    console.error('修改用户名失败:', error)
+    throw error
+  }
+}
+
+export const updatePassword = async (oldPassword, newPassword) => {
+  try {
+    const response = await apiClient.put('/auth/update-password', {
+      old_password: oldPassword,
+      new_password: newPassword
+    })
+    return response.data
+  } catch (error) {
+    console.error('修改密码失败:', error)
+    throw error
+  }
+}
+
 // 用户设置API
 export const getSettings = async () => {
   try {
@@ -254,6 +299,97 @@ export const processTextAsync = async (text, options, documentId) => {
     return response.data.data
   } catch (error) {
     console.error('异步文本处理失败:', error)
+    throw error
+  }
+}
+
+// 分组文本处理API
+export const processTextGrouped = async (text, options, documentId) => {
+  try {
+    const response = await apiClient.post('/text/process/grouped', {
+      text,
+      options,
+      document_id: documentId
+    })
+    console.log('分组文本处理API响应:', response.data)
+    // 后端直接返回响应对象，没有用data包装
+    return response.data
+  } catch (error) {
+    console.error('分组文本处理失败:', error)
+    throw error
+  }
+}
+
+// 获取分组任务进度
+export const getGroupedTaskProgress = async (taskId) => {
+  try {
+    const response = await apiClient.get(`/text/process/grouped/progress/${taskId}`)
+    console.log('分组任务进度API响应:', response.data)
+    // 后端用data包装响应
+    return response.data.data
+  } catch (error) {
+    console.error('获取分组任务进度失败:', error)
+    throw error
+  }
+}
+
+// 继续处理下一组
+export const continueGroupedTask = async (taskId) => {
+  try {
+    const response = await apiClient.post(`/text/process/grouped/${taskId}/continue`)
+    console.log('继续处理API响应:', response.data)
+    // 后端用data包装响应
+    return response.data.data
+  } catch (error) {
+    console.error('继续处理失败:', error)
+    throw error
+  }
+}
+
+// 获取未完成任务列表
+export const getUnfinishedTasks = async () => {
+  try {
+    const response = await apiClient.get('/text/process/unfinished')
+    console.log('未完成任务API响应:', response.data)
+    return response.data.data
+  } catch (error) {
+    console.error('获取未完成任务失败:', error)
+    throw error
+  }
+}
+
+// 中断/暂停任务
+export const pauseTask = async (taskId) => {
+  try {
+    const response = await apiClient.post(`/text/process/${taskId}/pause`)
+    console.log('暂停任务API响应:', response.data)
+    return response.data.data
+  } catch (error) {
+    console.error('暂停任务失败:', error)
+    throw error
+  }
+}
+
+// 获取任务进度
+export const getTaskProgress = async (taskId) => {
+  try {
+    const response = await apiClient.get(`/text/process/${taskId}/progress`)
+    console.log('任务进度API响应:', response.data)
+    return response.data.data
+  } catch (error) {
+    console.error('获取任务进度失败:', error)
+    throw error
+  }
+}
+
+// 获取文档处理状态
+export const getDocumentProcessingStatus = async (documentId) => {
+  try {
+    const response = await apiClient.get(`/documents/${documentId}/processing-status`)
+    console.log('文档处理状态API响应:', response.data)
+    return response.data.data
+  } catch (error) {
+    console.error('获取文档处理状态失败:', error)
     throw error
   }
 }

@@ -78,14 +78,14 @@
           :auto-upload="false"
           :on-change="handleFileUpload"
           :show-file-list="false"
-          accept=".txt,.pdf,.doc,.docx"
+          accept=".txt,.pdf,.doc,.docx,.epub"
           :file-list="[]"
         >
           <el-button type="primary" size="small">
             <el-icon><Upload /></el-icon> 选择文件
           </el-button>
         </el-upload>
-        <span class="upload-tip">支持 TXT、PDF、Word 文件</span>
+        <span class="upload-tip">支持 TXT、PDF、Word、EPUB 文件</span>
       </el-form-item>
       
       <el-form-item>
@@ -117,8 +117,8 @@ import { ref, computed, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/appStore'
 import { ElMessage } from 'element-plus'
-import { processText as apiProcessText, processTextAsync, getTaskStatus, uploadFile } from '../utils/api'
-import { Upload, Document, MagicStick, Delete, Reading, Download } from '@element-plus/icons-vue'
+import { processText as apiProcessText, processTextAsync, processTextGrouped, getGroupedTaskProgress, continueGroupedTask, getUnfinishedTasks, getTaskStatus, uploadFile, pauseTask } from '../utils/api'
+import { Upload, Document, MagicStick, Delete, Reading, Download, VideoPause } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const appStore = useAppStore()
@@ -162,6 +162,71 @@ const loadExampleText = () => {
   const randomIndex = Math.floor(Math.random() * exampleTexts.length)
   const example = exampleTexts[randomIndex]
   content.value = example.content
+}
+
+// 获取处理结果并更新 currentDocument
+const fetchAndSetProcessedContent = async (documentId) => {
+  if (!documentId) return
+  
+  try {
+    const token = localStorage.getItem('token')
+    if (!token) return
+    
+    // 获取文档的最新阅读历史
+    const response = await fetch(`/api/documents/${documentId}/history`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    if (response.ok) {
+      const result = await response.json()
+      const historyData = result.data
+      
+      if (historyData) {
+        // 解析数据
+        const parseData = (data, defaultValue = []) => {
+          if (!data) return defaultValue
+          if (typeof data === 'object') return data
+          try {
+            return JSON.parse(data)
+          } catch (e) {
+            console.error('解析数据失败:', e)
+            return defaultValue
+          }
+        }
+        
+        console.log('获取到最新处理结果:', historyData)
+        
+        // 更新 currentDocument - 确保完全替换所有字段
+        appStore.updateCurrentDocument({
+          id: documentId,
+          title: historyData.title || '未命名文档',
+          content: historyData.content_snapshot || '',
+          processedContent: historyData.content_snapshot || '',
+          simplifiedContent: historyData.simplified_content_snapshot || '',
+          segments: parseData(historyData.segments_snapshot, []),
+          simplifiedSegments: parseData(historyData.simplified_segments_snapshot, []),
+          pos_tags: parseData(historyData.pos_tags_snapshot, []),
+          simplified_pos_tags: parseData(historyData.simplified_pos_tags_snapshot, []),
+          processingSettings: parseData(historyData.processing_settings_snapshot, {}),
+          historyId: historyData.id,
+          // 强制更新标志
+          lastUpdated: Date.now()
+        })
+        
+        console.log('已更新 currentDocument 为最新处理结果')
+        
+        // 刷新阅读历史列表，确保下次打开历史记录时能看到最新数据
+        await appStore.loadReadingHistory()
+        console.log('已刷新阅读历史列表')
+      }
+    } else {
+      console.log('获取历史记录失败，状态码:', response.status)
+    }
+  } catch (error) {
+    console.error('获取处理结果失败:', error)
+  }
 }
 
 const processText = async () => {
@@ -209,136 +274,105 @@ const processText = async () => {
     }
     
     console.log('发送文本处理请求:', options)
-    
-    // 检查文本长度，决定使用同步还是异步处理
+
+    // 长文本使用分组处理
     if (content.value.length > 1000) {
-      // 使用异步处理
-      console.log('文本较长，使用异步处理')
-      // 获取当前文档的ID
-      const documentId = appStore.currentDocument.id
-      console.log('当前文档ID:', documentId, '类型:', typeof documentId)
-      
-      // 确保 documentId 是数字类型
-      const numericDocId = documentId ? parseInt(documentId, 10) : null
-      console.log('转换后的文档ID:', numericDocId, '类型:', typeof numericDocId)
-      
-      const taskData = await processTextAsync(content.value, options, numericDocId)
-      console.log('异步任务创建成功:', taskData)
-      
-      // 设置任务ID
+      console.log('文本较长，使用分组处理')
+      const documentId = appStore.currentDocument.id ? parseInt(appStore.currentDocument.id, 10) : null
+
+      const taskData = await processTextGrouped(content.value, options, documentId)
+      console.log('分组任务创建成功:', taskData)
+
       appStore.setProcessingTaskId(taskData.task_id)
-      
-      // 使用闭包确保变量值正确
-      const documentIdRef = { value: documentId }
-      
-      // 轮询任务状态
-      const checkTaskStatus = async () => {
+
+      let retryCount = 0
+      const MAX_RETRIES = 5
+
+      const checkGroupedStatus = async () => {
         try {
-          const taskStatus = await getTaskStatus(taskData.task_id)
-          console.log('任务状态:', taskStatus)
+          const progress = await getGroupedTaskProgress(taskData.task_id)
+          console.log('分组任务进度:', progress)
+
+          // 检查状态是否为完成（包含 completed 和 paused，因为单组任务完成后可能显示为 paused）
+          const isCompleted = progress.status === 'completed' || 
+                            (progress.status === 'paused' && progress.total_groups === 1) ||
+                            (progress.status === 'paused' && progress.group_index + 1 >= progress.total_groups)
           
-          if (taskStatus.status === 'completed') {
-            // 任务完成，处理结果
-            const result = taskStatus.result
-            console.log('文本处理API返回结果:', result)
-            
-            // 转换字段名以匹配前端期望的格式
-            const processedResult = {
-              processedContent: result.processed_text || '',
-              simplifiedContent: result.simplifiedContent || '',
-              segments: result.segments || [],
-              simplifiedSegments: result.simplified_segments || [],
-              pos_tags: result.pos_tags || [],
-              simplified_pos_tags: result.simplified_pos_tags || []
-            }
-            
-            console.log('转换后的结果:', processedResult)
-            
-            // 使用后端任务结果中的文档ID（如果有）
-            let currentDocId = taskData.document_id || documentIdRef.value
-            console.log('异步处理完成，使用文档ID:', currentDocId)
-            
-            // 确定文档标题
-            let documentTitle = appStore.currentDocument.title || '未命名文档'
-            
-            // 如果有真实的文档ID，使用原文档标题
-            const isRealDocId = currentDocId && currentDocId < 1000000000000
-            if (!isRealDocId) {
-              // 没有真实文档ID，生成新ID
-              const newDocId = Date.now()
-              // 如果内容是从上传的文档来的，保留标题；否则使用"未命名文档"
-              if (!appStore.currentDocument.processedInEditor && appStore.currentDocument.title) {
-                documentTitle = appStore.currentDocument.title
-              } else {
-                documentTitle = '未命名文档'
-              }
-              // 使用新生成的ID
-              currentDocId = newDocId
-            }
-            
-            // 更新当前文档（使用正确的 currentDocId）
-            appStore.updateCurrentDocument({
-              id: currentDocId,
-              title: documentTitle,
-              content: content.value,
-              processedInEditor: true,
-              fromDocumentRecord: false,
-              processingSettings: processingOptions,  // 保存处理设置到 currentDocument
-              ...processedResult
-            })
-            
-            // 如果是从文档记录打开编辑的，更新文档记录
-            if (appStore.currentDocument.fromDocumentRecord) {
-              await appStore.updateDocument(currentDocId, {
-                content: content.value,
-                processed_content: processedResult.processedContent,
-                simplified_content: processedResult.simplifiedContent,
-                segments: JSON.stringify(processedResult.segments),
-                simplified_segments: JSON.stringify(processedResult.simplifiedSegments),
-                pos_tags: JSON.stringify(processedResult.pos_tags),
-                simplified_pos_tags: JSON.stringify(processedResult.simplified_pos_tags)
-              })
-            }
-            
-            // 添加/更新阅读历史（使用文档标题，关联到正确的文档ID）
-            appStore.addReadingHistory({
-              id: Date.now(),
-              document_id: currentDocId,  // 始终关联到文档
-              title: documentTitle,
-              content: content.value,
-              processedContent: processedResult.processedContent,
-              simplifiedContent: processedResult.simplifiedContent,
-              segments: JSON.stringify(processedResult.segments),
-              simplifiedSegments: JSON.stringify(processedResult.simplifiedSegments),
-              pos_tags: JSON.stringify(processedResult.pos_tags),
-              simplified_pos_tags: JSON.stringify(processedResult.simplified_pos_tags),
-              processing_settings_snapshot: JSON.stringify(processingOptions),
-              reading_time: 0,
-              last_read_at: new Date().toISOString()
-            })
-            
-            // 不需要再次保存文档，因为后端已经创建了
+          if (isCompleted) {
+            console.log('所有分组处理完成')
             appStore.finishTextProcessing()
             ElMessage.success('文本处理成功！即将跳转到阅读页面...')
+            // 获取处理结果并更新 currentDocument
+            await fetchAndSetProcessedContent(taskData.document_id)
             router.push('/reader')
-          } else if (taskStatus.status === 'failed') {
-            // 任务失败
-            console.error('任务处理失败:', taskStatus.error)
+          } else if (progress.status === 'paused') {
+            console.log('当前组处理完成，准备跳转至阅读界面')
+            // 先获取处理结果并更新 currentDocument
+            await fetchAndSetProcessedContent(taskData.document_id)
             appStore.finishTextProcessing()
-            ElMessage.error(`处理失败: ${taskStatus.error || '未知错误'}`)
+
+            // 保存当前任务信息到store，以便在阅读界面可以继续处理下一组
+            appStore.setProcessingTaskId(taskData.task_id)
+            
+            ElMessage.success(`第 ${progress.group_index + 1}/${progress.total_groups} 组处理完成，即将跳转到阅读页面...`)
+            
+            // 延迟跳转，让用户看到提示信息
+            setTimeout(() => {
+              router.push('/reader')
+            }, 1500)
+          } else if (progress.status === 'failed') {
+            console.error('分组处理失败')
+            appStore.finishTextProcessing()
+            ElMessage.error('处理失败，请稍后重试')
           } else {
-            // 任务仍在处理中，继续轮询
-            setTimeout(checkTaskStatus, 2000) // 每2秒检查一次
+            retryCount = 0
+            // 对于单组任务，使用更短的检查间隔
+            const checkInterval = taskData.total_groups <= 1 ? 1000 : 3000
+            setTimeout(checkGroupedStatus, checkInterval)
           }
         } catch (error) {
-          console.error('获取任务状态失败:', error)
-          appStore.finishTextProcessing()
-          ElMessage.error('获取处理状态失败，请稍后重试')
+          console.error('获取分组任务进度失败:', error)
+          retryCount++
+          
+          if (retryCount < MAX_RETRIES) {
+            console.log(`重试获取任务状态，第 ${retryCount} 次`)
+            // 指数退避重试
+            setTimeout(checkGroupedStatus, Math.pow(2, retryCount) * 1000)
+          } else {
+            console.error('重试次数已达上限，尝试直接获取文档状态')
+            // 重试失败后，尝试直接获取文档处理状态
+            try {
+              const token = localStorage.getItem('token')
+              if (token && taskData.document_id) {
+                const response = await fetch(`/api/documents/${taskData.document_id}/processing-status`, {
+                  headers: { 'Authorization': `Bearer ${token}` }
+                })
+                if (response.ok) {
+                  const docStatus = await response.json()
+                  if (docStatus.data.status === 'completed' || docStatus.data.task_status === 'completed') {
+                    console.log('文档处理实际已完成，继续跳转')
+                    await fetchAndSetProcessedContent(taskData.document_id)
+                    appStore.finishTextProcessing()
+                    ElMessage.success('文本处理成功！即将跳转到阅读页面...')
+                    router.push('/reader')
+                    return
+                  }
+                }
+              }
+            } catch (docError) {
+              console.error('获取文档状态也失败:', docError)
+            }
+            
+            appStore.finishTextProcessing()
+            ElMessage.error('获取处理状态失败，请稍后重试')
+          }
         }
       }
+
+      setTimeout(checkGroupedStatus, 2000)
       
-      // 开始轮询
-      setTimeout(checkTaskStatus, 2000)
+      // 长文本异步处理，不立即跳转，等待处理完成后在回调中跳转
+      return
     } else {
         // 使用同步处理
         // 获取当前文档的ID
@@ -365,102 +399,91 @@ const processText = async () => {
         
         // 使用闭包确保变量值正确
         const documentIdRef = { value: documentId }
+        let retryCount = 0
+        const MAX_RETRIES = 5
         
         // 轮询任务状态
         const checkTaskStatus = async () => {
           try {
-            const taskStatus = await getTaskStatus(taskData.task_id)
-            console.log('任务状态:', taskStatus)
+            console.log(`[轮询] 第${retryCount + 1}次检查任务状态，task_id: ${taskData.task_id}`)
+            const response = await getTaskStatus(taskData.task_id)
+            // 后端返回的格式是 { message, data: { status, result } }
+            const taskStatus = response.data || response
+            console.log('[轮询] 任务状态响应:', JSON.stringify(taskStatus))
             
-            if (taskStatus.status === 'completed') {
-              // 任务完成，处理结果
-              const result = taskStatus.result
-              console.log('文本处理API返回结果:', result)
+            // 统一转换为小写进行判断
+            const status = String(taskStatus.status || '').toLowerCase()
+            console.log(`[轮询] 任务状态(小写): ${status}`)
+            
+            if (status === 'completed') {
+              // 任务完成，先从后端获取最新的历史记录数据
+              console.log('[轮询] 任务完成，开始获取最新历史记录...')
               
-              // 转换字段名以匹配前端期望的格式
-              const processedResult = {
-                processedContent: result.processed_text || '',
-                simplifiedContent: result.simplifiedContent || '',
-                segments: result.segments || [],
-                simplifiedSegments: result.simplified_segments || [],
-                pos_tags: result.pos_tags || [],
-                simplified_pos_tags: result.simplified_pos_tags || []
-              }
+              // 使用后端任务结果中的文档ID
+              const currentDocId = taskData.document_id || documentIdRef.value
+              console.log('[轮询] 文档ID:', currentDocId)
               
-              console.log('转换后的结果:', processedResult)
+              // 从后端获取最新的处理结果（关键：确保获取最新数据）
+              await fetchAndSetProcessedContent(currentDocId)
               
-              // 使用后端任务结果中的文档ID（如果有）
-              let currentDocId = taskData.document_id || documentIdRef.value
-              console.log('异步处理完成，使用文档ID:', currentDocId)
-              
-              // 确定文档标题
-              let documentTitle = appStore.currentDocument.title || '未命名文档'
-              
-              // 如果有真实的文档ID，使用原文档标题
-              const isRealDocId = currentDocId && currentDocId < 1000000000000
-              if (!isRealDocId) {
-                // 没有真实文档ID，生成新ID
-                const newDocId = Date.now()
-                // 如果内容是从上传的文档来的，保留标题；否则使用"未命名文档"
-                if (!appStore.currentDocument.processedInEditor && appStore.currentDocument.title) {
-                  documentTitle = appStore.currentDocument.title
-                } else {
-                  documentTitle = '未命名文档'
-                }
-                // 使用新生成的ID
-                currentDocId = newDocId
-              }
-              
-              // 更新当前文档（使用正确的 currentDocId）
-              appStore.updateCurrentDocument({
-                id: currentDocId,
-                title: documentTitle,
-                content: content.value,
-                processedInEditor: true,
-                fromDocumentRecord: false,
-                processingSettings: processingOptions,  // 保存处理设置到 currentDocument
-                ...processedResult
-              })
-              
-              // 添加阅读历史（使用文档标题，关联到正确的文档ID）
-              appStore.addReadingHistory({
-                id: Date.now(),
-                document_id: currentDocId,  // 始终关联到文档
-                title: documentTitle,
-                content: content.value,
-                processedContent: processedResult.processedContent,
-                simplifiedContent: processedResult.simplifiedContent,
-                segments: JSON.stringify(processedResult.segments),
-                simplifiedSegments: JSON.stringify(processedResult.simplifiedSegments),
-                pos_tags: JSON.stringify(processedResult.pos_tags),
-                simplified_pos_tags: JSON.stringify(processedResult.simplified_pos_tags),
-                processing_settings_snapshot: JSON.stringify(processingOptions),  // 保存处理设置
-                reading_time: 0,
-                last_read_at: new Date().toISOString()
-              })
+              console.log('[轮询] 已获取最新处理结果')
                 
-                // 不需要再次保存文档，因为后端已经创建了
-                appStore.finishTextProcessing()
-                ElMessage.success('文本处理成功！即将跳转到阅读页面...')
-                router.push('/reader')
-              } else if (taskStatus.status === 'failed') {
+              // 不需要再次保存文档，因为后端已经创建了
+              appStore.finishTextProcessing()
+              ElMessage.success('文本处理成功！即将跳转到阅读页面...')
+              router.push('/reader')
+              } else if (status === 'failed') {
                 // 任务失败
-                console.error('任务处理失败:', taskStatus.error)
+                console.error('[轮询] 任务处理失败:', taskStatus.error)
                 appStore.finishTextProcessing()
                 ElMessage.error(`处理失败: ${taskStatus.error || '未知错误'}`)
               } else {
                 // 任务仍在处理中，继续轮询
+                console.log(`[轮询] 任务仍在处理中，状态: ${status}`)
                 setTimeout(checkTaskStatus, 2000) // 每2秒检查一次
               }
             } catch (error) {
-              console.error('获取任务状态失败:', error)
-              appStore.finishTextProcessing()
-              ElMessage.error('获取处理状态失败，请稍后重试')
+              console.error('[轮询] 获取任务状态失败:', error.response?.data || error.message || error)
+              retryCount++
+              
+              if (retryCount < MAX_RETRIES) {
+                console.log(`[轮询] 重试获取任务状态，第 ${retryCount} 次`)
+                setTimeout(checkTaskStatus, Math.pow(2, retryCount) * 1000)
+              } else {
+                console.error('[轮询] 重试次数已达上限，尝试直接获取文档状态')
+                // 重试失败后，尝试直接获取文档处理状态
+                try {
+                  const token = localStorage.getItem('token')
+                  if (token && taskData.document_id) {
+                    const response = await fetch(`/api/documents/${taskData.document_id}/processing-status`, {
+                      headers: { 'Authorization': `Bearer ${token}` }
+                    })
+                    if (response.ok) {
+                      const docStatus = await response.json()
+                      const docStatusValue = String(docStatus.data?.status || docStatus.data?.task_status || '').toLowerCase()
+                      if (docStatusValue === 'completed') {
+                        console.log('[轮询] 文档处理实际已完成，继续跳转')
+                        await fetchAndSetProcessedContent(taskData.document_id)
+                        appStore.finishTextProcessing()
+                        ElMessage.success('文本处理成功！即将跳转到阅读页面...')
+                        router.push('/reader')
+                        return
+                      }
+                    }
+                  }
+                } catch (docError) {
+                  console.error('[轮询] 获取文档状态也失败:', docError)
+                }
+                
+                appStore.finishTextProcessing()
+                ElMessage.error('获取处理状态失败，请稍后重试')
+              }
             }
           }
           
-          // 开始轮询
+          // 开始轮询，异步处理不立即跳转
           setTimeout(checkTaskStatus, 2000)
+          return
       } else {
         // 同步处理成功，继续正常流程
         
@@ -501,31 +524,15 @@ const processText = async () => {
           ...processedResult
         })
         
-        // 添加阅读历史（关联到后端返回的文档ID）
-        appStore.addReadingHistory({
-          id: Date.now(),
-          document_id: documentId,  // 始终关联到文档
-          title: documentTitle,
-          content: content.value,
-          processedContent: processedResult.processedContent,
-          simplifiedContent: processedResult.simplifiedContent,
-          segments: JSON.stringify(processedResult.segments),
-          simplifiedSegments: JSON.stringify(processedResult.simplifiedSegments),
-          pos_tags: JSON.stringify(processedResult.pos_tags),
-          simplified_pos_tags: JSON.stringify(processedResult.simplified_pos_tags),
-          processing_settings_snapshot: JSON.stringify(processingOptions),  // 保存处理设置
-          reading_time: 0,
-          last_read_at: new Date().toISOString()
-        })
-        
+        // 阅读历史由后端在处理文本时自动创建，不需要前端重复创建
         // 不需要再次保存文档，因为后端已经创建了
         // await appStore.saveCurrentDocument()
+        
+        // 同步处理完成，显示成功提示并跳转
+        appStore.finishTextProcessing()
+        ElMessage.success('文本处理成功！即将跳转到阅读页面...')
+        router.push('/reader')
       }
-      
-      // 完成处理，显示成功提示并跳转
-      appStore.finishTextProcessing()
-      ElMessage.success('文本处理成功！即将跳转到阅读页面...')
-      router.push('/reader')
     }
   } catch (error) {
     console.error('处理文本失败:', error)
@@ -576,9 +583,7 @@ const handleFileUpload = async (file) => {
         // 自动创建文档记录
         const documentData = {
           title: file.raw.name,
-          original_filename: file.raw.name,
           file_type: file.raw.name.split('.').pop().toLowerCase(),
-          file_size: file.raw.size,
           content: response.content
         }
         

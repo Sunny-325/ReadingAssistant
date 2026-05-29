@@ -16,6 +16,7 @@ class FileType(str, enum.Enum):
     pdf = "pdf"
     doc = "doc"
     docx = "docx"
+    epub = "epub"
 
 
 class DocumentStatus(str, enum.Enum):
@@ -23,6 +24,7 @@ class DocumentStatus(str, enum.Enum):
     processing = "processing"
     completed = "completed"
     failed = "failed"
+    paused = "paused"
 
 
 class Document(Base):
@@ -31,18 +33,20 @@ class Document(Base):
     只存储原始文档内容和基本信息，不存储处理后的数据
     """
     __tablename__ = "documents"
+    __table_args__ = {'mysql_engine': 'InnoDB', 'mysql_charset': 'utf8mb4'}
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    group_id = Column(Integer, nullable=True, default=None)  # 文档分组ID
+    group_id = Column(Integer, nullable=True, default=None)
     title = Column(String(255), nullable=False)
-    original_filename = Column(String(255), nullable=True)
-    file_path = Column(String(512), nullable=True)
     file_type = Column(Enum(FileType), nullable=True)
-    file_size = Column(Integer, nullable=True)
-    content = Column(Text, nullable=False)  # 原始文本内容
+    content = Column(Text, nullable=False)
     status = Column(Enum(DocumentStatus), nullable=False, default=DocumentStatus.pending)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    processed_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # 分组处理相关字段
+    processing_task_id = Column(Integer, nullable=True)
+    total_groups = Column(Integer, nullable=True, default=0)
+    completed_groups = Column(Integer, nullable=True, default=0)

@@ -15,7 +15,7 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.services.auth_service import verify_password, get_password_hash, create_access_token, decode_access_token
 from app.models.user import User
-from app.schemas.user import UserCreate, User as UserSchema
+from app.schemas.user import UserCreate, User as UserSchema, Token
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -31,7 +31,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     """
     获取当前用户
-    
+
     :param token: 访问令牌
     :param db: 数据库会话
     :return: 当前用户
@@ -41,30 +41,30 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
+
     payload = decode_access_token(token)
     if payload is None:
         raise credentials_exception
-    
+
     username: str = payload.get("sub")
     if username is None:
         raise credentials_exception
-    
+
     user = db.query(User).filter(User.username == username).first()
     if user is None:
         raise credentials_exception
-    
+
     return user
 
 
-@router.post("/auth/token", response_model=Dict[str, str])
+@router.post("/auth/token", response_model=Dict[str, Any])
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """
     用户登录
     """
     # 查找用户
     user = db.query(User).filter(User.username == form_data.username).first()
-    
+
     # 验证用户和密码
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
@@ -72,16 +72,22 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # 创建访问令牌（24小时过期）
     access_token_expires = timedelta(hours=24)
     access_token = create_access_token(
         data={"sub": user.username},
         expires_delta=access_token_expires
     )
-    
+
     logger.info(f"用户登录成功: {user.username}")
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "message": f"登录成功，欢迎回来！",
+        "success": True,
+        "username": user.username
+    }
 
 
 @router.post("/auth/register", response_model=UserSchema)
@@ -96,7 +102,7 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered"
         )
-    
+
     # 检查邮箱是否已存在
     existing_email = db.query(User).filter(User.email == user.email).first()
     if existing_email:
@@ -104,7 +110,7 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
-    
+
     # 创建新用户
     hashed_password = get_password_hash(user.password)
     new_user = User(
@@ -112,14 +118,14 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
         email=user.email,
         password_hash=hashed_password
     )
-    
+
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    
+
     # 重新查询用户以确保获取到完整的数据（包括时间戳）
     db_user = db.query(User).filter(User.id == new_user.id).first()
-    
+
     logger.info(f"用户注册成功: {user.username}")
     return db_user
 
@@ -130,3 +136,132 @@ async def get_me(current_user: User = Depends(get_current_user)):
     获取当前用户信息
     """
     return current_user
+
+
+@router.put("/auth/update-username", response_model=Dict[str, str])
+async def update_username(
+    request_data: Dict[str, str],
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    修改用户名
+    """
+    new_username = request_data.get("new_username")
+    
+    # 检查新用户名
+    if not new_username or not new_username.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="用户名不能为空"
+        )
+    
+    # 检查新用户名是否已存在
+    existing_user = db.query(User).filter(User.username == new_username).first()
+    if existing_user and existing_user.id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="用户名已被使用"
+        )
+    
+    # 更新用户名
+    old_username = current_user.username
+    current_user.username = new_username
+    db.commit()
+    
+    logger.info(f"用户修改用户名: {old_username} -> {new_username}")
+    return {"message": "用户名修改成功"}
+
+
+@router.put("/auth/update-password", response_model=Dict[str, str])
+async def update_password(
+    request_data: Dict[str, str],
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    修改密码
+    """
+    old_password = request_data.get("old_password")
+    new_password = request_data.get("new_password")
+    
+    # 验证输入
+    if not old_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="旧密码不能为空"
+        )
+    
+    if not new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="新密码不能为空"
+        )
+    
+    # 验证旧密码
+    if not verify_password(old_password, current_user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="旧密码不正确"
+        )
+    
+    # 更新密码
+    current_user.password_hash = get_password_hash(new_password)
+    db.commit()
+    
+    logger.info(f"用户修改密码: {current_user.username}")
+    return {"message": "密码修改成功"}
+
+
+@router.post("/auth/logout", response_model=Dict[str, str])
+async def logout(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    退出登录
+    结束当前会话，清除登录状态（token仍然有效直到过期）
+    """
+    logger.info(f"用户退出登录: {current_user.username}")
+    return {"message": "退出登录成功"}
+
+
+@router.delete("/auth/account", response_model=Dict[str, str])
+async def delete_account(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    账号注销（删除账号）
+    永久删除用户账号及其所有相关数据
+    """
+    try:
+        username = current_user.username
+
+        # 删除用户的所有阅读历史
+        from ..models.reading_history import ReadingHistory
+        db.query(ReadingHistory).filter(ReadingHistory.user_id == current_user.id).delete()
+
+        # 删除用户的所有文档
+        from ..models.document import Document
+        db.query(Document).filter(Document.user_id == current_user.id).delete()
+
+        # 删除用户的所有任务
+        from ..models.task import Task
+        db.query(Task).filter(Task.user_id == current_user.id).delete()
+
+        # 删除用户的所有设置
+        from ..models.setting import Setting
+        db.query(Setting).filter(Setting.user_id == current_user.id).delete()
+
+        # 删除用户
+        db.delete(current_user)
+        db.commit()
+
+        logger.info(f"账号注销成功: {username}")
+        return {"message": "账号注销成功，所有数据已删除"}
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"账号注销失败: {e}")
+        raise HTTPException(status_code=500, detail=f"账号注销失败: {str(e)}")

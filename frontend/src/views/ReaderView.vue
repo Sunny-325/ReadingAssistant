@@ -22,10 +22,11 @@
         <div class="panel-header">
           <h3>原文本</h3>
           <div class="panel-controls">
-            <el-button size="small" @click="isSpeakingOriginal ? stopOriginalSpeech() : startOriginalSpeech()" :disabled="false">
-              <el-icon v-if="!isSpeakingOriginal"><Microphone /></el-icon>
-              <el-icon v-else><Close /></el-icon>
-              {{ isSpeakingOriginal ? ' 暂停' : ' 播放' }}
+            <el-button size="small" @click="handleOriginalPlayPause" :disabled="false">
+              <el-icon v-if="isSpeakingOriginal"><VideoPause /></el-icon>
+              <el-icon v-else-if="isOriginalPaused"><VideoPlay /></el-icon>
+              <el-icon v-else><Microphone /></el-icon>
+              {{ isSpeakingOriginal ? ' 暂停' : (isOriginalPaused ? ' 继续' : ' 播放') }}
             </el-button>
             <el-button size="small" @click="toggleFullScreen('original')">
               <el-icon><FullScreen /></el-icon> 全屏
@@ -80,14 +81,15 @@
           
           <!-- 全屏播放按钮 - 底部中央 -->
           <div v-if="isOriginalFullScreen" class="fullscreen-play-control">
-            <el-button 
-              circle 
-              size="large" 
-              @click="isSpeakingOriginal ? stopOriginalSpeech() : startOriginalSpeech()"
+            <el-button
+              circle
+              size="large"
+              @click="handleOriginalPlayPause"
               class="play-button"
             >
-              <el-icon v-if="!isSpeakingOriginal" :size="24"><VideoPlay /></el-icon>
-              <el-icon v-else :size="24"><VideoPause /></el-icon>
+              <el-icon v-if="isSpeakingOriginal" :size="24"><VideoPause /></el-icon>
+              <el-icon v-else-if="isOriginalPaused" :size="24"><VideoPlay /></el-icon>
+              <el-icon v-else :size="24"><VideoPlay /></el-icon>
             </el-button>
           </div>
           
@@ -108,7 +110,7 @@
             <!-- 字体设置 -->
             <div class="setting-item">
               <label>字体</label>
-              <select :value="appStore.readerSettings.fontFamily" @change="appStore.updateReaderSettings({ fontFamily: $event.target.value })" class="font-select">
+              <select v-model="appStore.readerSettings.fontFamily" class="font-select">
                 <option value="Arial">Arial</option>
                 <option value="Microsoft YaHei">微软雅黑</option>
                 <option value="SimSun">宋体</option>
@@ -258,12 +260,12 @@
               @click="handleSegmentClick(segment)"
             >
               <!-- 显示带有词性标注的文本 -->
-              <template v-if="readerSettings.posTagging && currentDocument.pos_tags && currentDocument.pos_tags.length > 0">
+              <template v-if="readerSettings.posTagging && (segment.pos_tags || (currentDocument.pos_tags && currentDocument.pos_tags.length > 0))">
                 <span 
-                  v-for="word in getSegmentWords(segment.text, segment.start_pos || 0, false)" 
-                  :key="word.position"
-                  :class="['word-tag', getPosClass(word.text, word.position)]"
-                  :style="getPosFontSize(word.text, word.position)"
+                  v-for="(word, index) in getSegmentWords(segment.text, segment.start_pos || 0, false, segment)" 
+                  :key="word.position + '-' + index"
+                  :class="word.isPlainText ? '' : ['word-tag', getPosClassByTag(word.tag)]"
+                  :style="word.isPlainText ? {} : getPosStyleByTag(word.tag)"
                 >
                   {{ word.text }}
                 </span>
@@ -294,12 +296,12 @@
               @click="handleSegmentClick(segment)"
             >
               <!-- 显示带有词性标注的文本 -->
-              <template v-if="readerSettings.posTagging && currentDocument.pos_tags && currentDocument.pos_tags.length > 0">
+              <template v-if="readerSettings.posTagging && (segment.pos_tags || (currentDocument.pos_tags && currentDocument.pos_tags.length > 0))">
                 <span 
-                  v-for="word in getSegmentWords(segment.text, segment.start_pos || 0, false)" 
-                  :key="word.position"
-                  :class="['word-tag', getPosClass(word.text, word.position)]"
-                  :style="getPosFontSize(word.text, word.position)"
+                  v-for="(word, index) in getSegmentWords(segment.text, segment.start_pos || 0, false, segment)" 
+                  :key="word.position + '-' + index"
+                  :class="word.isPlainText ? '' : ['word-tag', getPosClassByTag(word.tag)]"
+                  :style="word.isPlainText ? {} : getPosStyleByTag(word.tag)"
                 >
                   {{ word.text }}
                 </span>
@@ -315,14 +317,22 @@
                 v-for="(tag, index) in currentDocument.pos_tags" 
                 :key="index"
                 :class="['word-tag', getPosClass(tag.word, tag.start_pos)]"
-                :style="getPosFontSize(tag.word, tag.start_pos)"
+                :style="getPosStyle(tag.word, tag.start_pos)"
               >
                 {{ tag.word }}
               </span>
             </span>
           </template>
+          <template v-else-if="currentDocument.content && currentDocument.content.length > 0">
+            <!-- 未处理文档：直接显示原文本，支持分页 -->
+            <div class="plain-text-content">
+              {{ getCurrentPageContent() }}
+            </div>
+          </template>
           <template v-else>
-            <span>{{ currentDocument.content }}</span>
+            <div class="empty-content">
+              <p>暂无内容</p>
+            </div>
           </template>
           
           <!-- 分页控制 -->
@@ -386,10 +396,11 @@
         <div class="panel-header">
           <h3>简化文本</h3>
           <div class="panel-controls">
-            <el-button size="small" @click="isSpeakingSimplified ? stopSimplifiedSpeech() : startSimplifiedSpeech()" :disabled="false">
-              <el-icon v-if="!isSpeakingSimplified"><Microphone /></el-icon>
-              <el-icon v-else><Close /></el-icon>
-              {{ isSpeakingSimplified ? ' 暂停' : ' 播放' }}
+            <el-button size="small" @click="handleSimplifiedPlayPause" :disabled="false">
+              <el-icon v-if="isSpeakingSimplified"><VideoPause /></el-icon>
+              <el-icon v-else-if="isSimplifiedPaused"><VideoPlay /></el-icon>
+              <el-icon v-else><Microphone /></el-icon>
+              {{ isSpeakingSimplified ? ' 暂停' : (isSimplifiedPaused ? ' 继续' : ' 播放') }}
             </el-button>
             <el-button size="small" @click="toggleFullScreen('simplified')">
               <el-icon><FullScreen /></el-icon> 全屏
@@ -444,14 +455,15 @@
           
           <!-- 全屏播放按钮 - 底部中央 -->
           <div v-if="isSimplifiedFullScreen" class="fullscreen-play-control">
-            <el-button 
-              circle 
-              size="large" 
-              @click="isSpeakingSimplified ? stopSimplifiedSpeech() : startSimplifiedSpeech()"
+            <el-button
+              circle
+              size="large"
+              @click="handleSimplifiedPlayPause"
               class="play-button"
             >
-              <el-icon v-if="!isSpeakingSimplified" :size="24"><VideoPlay /></el-icon>
-              <el-icon v-else :size="24"><VideoPause /></el-icon>
+              <el-icon v-if="isSpeakingSimplified" :size="24"><VideoPause /></el-icon>
+              <el-icon v-else-if="isSimplifiedPaused" :size="24"><VideoPlay /></el-icon>
+              <el-icon v-else :size="24"><VideoPlay /></el-icon>
             </el-button>
           </div>
           
@@ -623,12 +635,12 @@
               @click="handleSegmentClick(segment)"
             >
               <!-- 显示带有词性标注的文本 -->
-              <template v-if="readerSettings.posTagging && currentDocument.simplified_pos_tags && currentDocument.simplified_pos_tags.length > 0">
+              <template v-if="readerSettings.posTagging && (segment.pos_tags || (currentDocument.simplified_pos_tags && currentDocument.simplified_pos_tags.length > 0))">
                 <span 
-                  v-for="word in getSegmentWords(segment.text, segment.start_pos || 0, true)" 
+                  v-for="word in getSegmentWords(segment.text, segment.start_pos || 0, true, segment)" 
                   :key="word.position"
-                  :class="['word-tag', getPosClass(word.text, word.position, true)]"
-                  :style="getPosFontSize(word.text, word.position, true)"
+                  :class="word.isPlainText ? '' : ['word-tag', getPosClass(word.text, word.position, true)]"
+                  :style="word.isPlainText ? {} : getPosStyle(word.text, word.position, true)"
                 >
                   {{ word.text }}
                 </span>
@@ -659,12 +671,12 @@
               @click="handleSegmentClick(segment)"
             >
               <!-- 显示带有词性标注的文本 -->
-              <template v-if="readerSettings.posTagging && currentDocument.simplified_pos_tags && currentDocument.simplified_pos_tags.length > 0">
+              <template v-if="readerSettings.posTagging && (segment.pos_tags || (currentDocument.simplified_pos_tags && currentDocument.simplified_pos_tags.length > 0))">
                 <span 
-                  v-for="word in getSegmentWords(segment.text, segment.start_pos || 0, true)" 
+                  v-for="word in getSegmentWords(segment.text, segment.start_pos || 0, true, segment)" 
                   :key="word.position"
-                  :class="['word-tag', getPosClass(word.text, word.position, true)]"
-                  :style="getPosFontSize(word.text, word.position, true)"
+                  :class="word.isPlainText ? '' : ['word-tag', getPosClass(word.text, word.position, true)]"
+                  :style="word.isPlainText ? {} : getPosStyle(word.text, word.position, true)"
                 >
                   {{ word.text }}
                 </span>
@@ -680,7 +692,7 @@
                 v-for="(tag, index) in currentDocument.simplified_pos_tags" 
                 :key="index"
                 :class="['word-tag', getPosClass(tag.word, tag.start_pos, true)]"
-                :style="getPosFontSize(tag.word, tag.start_pos, true)"
+                :style="getPosStyle(tag.word, tag.start_pos, true)"
               >
                 {{ tag.word }}
               </span>
@@ -800,6 +812,9 @@ import { pyttsx3, playPyttsx3 } from '../utils/pyttsx3'
 
 const appStore = useAppStore()
 
+// 用于取消正在进行的请求
+const abortController = ref(null)
+
 // 从store中获取状态
 const currentDocument = computed(() => appStore.currentDocument)
 const readerSettings = computed(() => {
@@ -809,6 +824,12 @@ const readerSettings = computed(() => {
   console.log('selectedPosTags:', settings.selectedPosTags)
   return settings
 })
+
+// 更新设置并保存
+const updateSetting = (key, value) => {
+  console.log(`更新设置: ${key} = ${value}`)
+  appStore.updateReaderSettings({ [key]: value })
+}
 const definitionPanel = computed(() => appStore.definitionPanel)
 
 // 音频元素
@@ -886,7 +907,7 @@ const paginationState = reactive({
   original: {
     currentPage: 1,
     totalPages: 1,
-    pageSize: 10,
+    pageSize: 100,
     loadedPages: [1],  // 使用数组替代 Set
     pageCache: {},
     nextPageLoading: false
@@ -894,7 +915,7 @@ const paginationState = reactive({
   simplified: {
     currentPage: 1,
     totalPages: 1,
-    pageSize: 10,
+    pageSize: 100,
     loadedPages: [1],  // 使用数组替代 Set
     pageCache: {},
     nextPageLoading: false
@@ -919,9 +940,54 @@ const currentSimplifiedSegments = computed(() => {
   return simplifiedSegments.value.slice(0, state.pageSize)
 })
 
+// 获取当前页的文本内容（用于未处理文档的分页显示）
+const getCurrentPageContent = () => {
+  const content = currentDocument.value.content || ''
+  const state = paginationState.original
+  const currentPage = state.currentPage
+  
+  // 未处理文档使用更大的分页尺寸（按段落分页，约1000字符/页）
+  const plainTextPageSize = 1000
+  
+  // 按段落边界分页
+  const pages = []
+  let currentPageContent = ''
+  
+  // 按换行符分割段落
+  const paragraphs = content.split(/\n\n|\n/)
+  
+  for (const paragraph of paragraphs) {
+    // 如果当前页加上这个段落超过限制，就新建一页
+    if (currentPageContent.length + paragraph.length > plainTextPageSize && currentPageContent.length > 0) {
+      pages.push(currentPageContent.trim())
+      currentPageContent = paragraph + '\n'
+    } else {
+      currentPageContent += paragraph + '\n'
+    }
+  }
+  
+  // 添加最后一页
+  if (currentPageContent.trim()) {
+    pages.push(currentPageContent.trim())
+  }
+  
+  // 更新总页数
+  state.totalPages = Math.max(1, pages.length)
+  
+  // 返回当前页内容（处理越界情况）
+  const pageIndex = Math.max(0, Math.min(currentPage - 1, pages.length - 1))
+  return pages[pageIndex] || content
+}
+
 // 朗读位置记录
 const originalSpeechPosition = ref(0)
 const simplifiedSpeechPosition = ref(0)
+
+// 暂停状态记录（用于真正的暂停/恢复功能）
+const originalPausedPosition = ref(0)  // 暂停时的位置
+const simplifiedPausedPosition = ref(0)  // 暂停时的位置
+const isOriginalPaused = ref(false)     // 是否处于暂停状态
+const isSimplifiedPaused = ref(false)    // 是否处于暂停状态
 
 // 全屏状态
 const isOriginalFullScreen = ref(false)
@@ -937,11 +1003,22 @@ const pageVisitTime = ref({
 const progressUpdateTimer = ref(null)
 
 // 最小阅读停留时间（秒），超过此时间才计入阅读进度
-const MIN_READING_TIME = 3
+const MIN_READING_TIME = 30
 
 // 分页相关方法
 const fetchSegments = async (documentId, page, pageSize, type) => {
   try {
+    // 在发送新请求前取消之前的请求
+    if (abortController.value) {
+      abortController.value.abort()
+    }
+    
+    // 创建新的 abort controller
+    abortController.value = new AbortController()
+    
+    // 在发送请求前记录当前文档ID
+    const requestDocumentId = documentId
+    
     const token = localStorage.getItem('token')
     if (!token) {
       console.error('未登录，跳转到登录页')
@@ -957,7 +1034,8 @@ const fetchSegments = async (documentId, page, pageSize, type) => {
       {
         headers: {
           'Authorization': `Bearer ${token}`
-        }
+        },
+        signal: abortController.value.signal
       }
     )
     
@@ -973,6 +1051,12 @@ const fetchSegments = async (documentId, page, pageSize, type) => {
       return null
     }
     
+    // 检查文档是否已切换，如果已切换则忽略此响应
+    if (currentDocument.value.id !== requestDocumentId) {
+      console.log(`文档已切换，忽略旧请求的响应 (requestId: ${requestDocumentId}, currentId: ${currentDocument.value.id})`)
+      return null
+    }
+    
     // 处理404错误（文档没有关联的阅读历史）
     if (response.status === 404) {
       console.warn(`文档 ${documentId} 没有关联的阅读历史，将使用本地数据`)
@@ -985,6 +1069,11 @@ const fetchSegments = async (documentId, page, pageSize, type) => {
     }
     return null
   } catch (error) {
+    // 处理请求被取消的情况
+    if (error.name === 'AbortError') {
+      console.log('请求已被取消（文档切换）')
+      return null
+    }
     console.error('获取分页意群失败:', error)
     return null
   }
@@ -1008,6 +1097,20 @@ const loadPage = async (type, page) => {
   
   if (state.loadedPages.includes(page)) {
     state.currentPage = page
+    // 记录页面访问时间
+    pageVisitTime.value[type] = { page, timestamp: Date.now() }
+    return Promise.resolve()
+  }
+  
+  // 检查是否是未处理文档（没有segments数据，使用纯文本分页）
+  const hasSegments = type === 'original' 
+    ? (currentDocument.value.segments && currentDocument.value.segments.length > 0)
+    : (currentDocument.value.simplifiedSegments && currentDocument.value.simplifiedSegments.length > 0)
+  
+  if (!hasSegments) {
+    // 未处理文档：直接更新页码，使用纯文本分页逻辑
+    state.currentPage = page
+    state.loadedPages.push(page)
     // 记录页面访问时间
     pageVisitTime.value[type] = { page, timestamp: Date.now() }
     return Promise.resolve()
@@ -1306,9 +1409,25 @@ const preloadNextPage = async (type) => {
 const nextPage = (type) => {
   const state = paginationState[type]
   if (state.currentPage < state.totalPages) {
+    // 如果正在朗读，暂停朗读并记录当前位置
+    if (type === 'original' && isSpeakingOriginal.value) {
+      pauseOriginalSpeech()
+    } else if (type === 'simplified' && isSpeakingSimplified.value) {
+      pauseSimplifiedSpeech()
+    }
+    
     loadPage(type, state.currentPage + 1).then(() => {
-      // 更新当前页面的第一个意群为高亮
+      // 翻页后，更新高亮为当前页第一个意群，并设置朗读位置
       updateHighlightOnPageChange(type)
+      // 设置朗读位置为当前页第一个意群（但不开始朗读）
+      setSpeechPositionToCurrentPage(type)
+      
+      // 只重置暂停状态，不重置位置（位置已经被 setSpeechPositionToCurrentPage 设置为正确的值）
+      if (type === 'original') {
+        isOriginalPaused.value = false
+      } else if (type === 'simplified') {
+        isSimplifiedPaused.value = false
+      }
     })
   }
 }
@@ -1316,9 +1435,25 @@ const nextPage = (type) => {
 const prevPage = (type) => {
   const state = paginationState[type]
   if (state.currentPage > 1) {
+    // 如果正在朗读，暂停朗读并记录当前位置
+    if (type === 'original' && isSpeakingOriginal.value) {
+      pauseOriginalSpeech()
+    } else if (type === 'simplified' && isSpeakingSimplified.value) {
+      pauseSimplifiedSpeech()
+    }
+    
     loadPage(type, state.currentPage - 1).then(() => {
-      // 更新当前页面的第一个意群为高亮
+      // 翻页后，更新高亮为当前页第一个意群，并设置朗读位置
       updateHighlightOnPageChange(type)
+      // 设置朗读位置为当前页第一个意群（但不开始朗读）
+      setSpeechPositionToCurrentPage(type)
+      
+      // 只重置暂停状态，不重置位置（位置已经被 setSpeechPositionToCurrentPage 设置为正确的值）
+      if (type === 'original') {
+        isOriginalPaused.value = false
+      } else if (type === 'simplified') {
+        isSimplifiedPaused.value = false
+      }
     })
   }
 }
@@ -1326,9 +1461,25 @@ const prevPage = (type) => {
 const goToPage = (type, page) => {
   const state = paginationState[type]
   if (page >= 1 && page <= state.totalPages) {
+    // 如果正在朗读，暂停朗读并记录当前位置
+    if (type === 'original' && isSpeakingOriginal.value) {
+      pauseOriginalSpeech()
+    } else if (type === 'simplified' && isSpeakingSimplified.value) {
+      pauseSimplifiedSpeech()
+    }
+    
     loadPage(type, page).then(() => {
-      // 更新当前页面的第一个意群为高亮
+      // 翻页后，更新高亮为当前页第一个意群，并设置朗读位置
       updateHighlightOnPageChange(type)
+      // 设置朗读位置为当前页第一个意群（但不开始朗读）
+      setSpeechPositionToCurrentPage(type)
+      
+      // 只重置暂停状态，不重置位置（位置已经被 setSpeechPositionToCurrentPage 设置为正确的值）
+      if (type === 'original') {
+        isOriginalPaused.value = false
+      } else if (type === 'simplified') {
+        isSimplifiedPaused.value = false
+      }
     })
   }
 }
@@ -1355,6 +1506,46 @@ const updateHighlightOnPageChange = (type) => {
   }
 }
 
+// 设置朗读位置为当前页第一个意群（但不开始朗读）
+const setSpeechPositionToCurrentPage = (type) => {
+  const state = paginationState[type]
+  const currentPage = state.currentPage
+  const pageSize = state.pageSize
+  
+  // 计算当前页面第一个意群的索引
+  const firstSegmentIndex = (currentPage - 1) * pageSize
+  
+  // 获取当前页面的意群列表
+  const allSegments = type === 'original' ? segments.value : simplifiedSegments.value
+  const fullText = type === 'original' ? currentDocument.value.content : currentDocument.value.simplifiedContent
+  
+  if (allSegments.length > firstSegmentIndex) {
+    const firstSegment = allSegments[firstSegmentIndex]
+    const targetPosition = firstSegment.start_pos || 0
+    
+    if (type === 'original') {
+      originalSpeechPosition.value = targetPosition
+      // 如果是暂停状态，恢复也从此位置开始
+      originalPausedPosition.value = targetPosition
+    } else {
+      simplifiedSpeechPosition.value = targetPosition
+      simplifiedPausedPosition.value = targetPosition
+    }
+  } else {
+    // 如果没有意群数据，使用估算值
+    const estimatedCharsPerSegment = 20
+    const targetPosition = firstSegmentIndex * estimatedCharsPerSegment
+    
+    if (type === 'original') {
+      originalSpeechPosition.value = Math.min(targetPosition, fullText.length - 1)
+      originalPausedPosition.value = Math.min(targetPosition, fullText.length - 1)
+    } else {
+      simplifiedSpeechPosition.value = Math.min(targetPosition, fullText.length - 1)
+      simplifiedPausedPosition.value = Math.min(targetPosition, fullText.length - 1)
+    }
+  }
+}
+
 const jumpToPage = (type, page) => {
   goToPage(type, page)
   showTocDialog.value = false
@@ -1370,19 +1561,25 @@ const openTocDialog = (type = 'original') => {
 // 初始化分页数据
 const initPagination = async () => {
   console.log('initPagination called, document id:', currentDocument.value.id)
-  console.log('document content:', currentDocument.value.content)
-  console.log('document segments:', currentDocument.value.segments)
   
   if (!currentDocument.value.id) {
     console.log('No document id, returning')
     return
   }
   
-  // 重置分页状态（后端限制 page_size 最大为50）
+  // 获取历史记录的阅读进度（如果有）
+  let historyProgress = currentDocument.value.reading_progress || 0
+  // 如果 readingProgress 是百分比形式（0-100），转换为小数形式（0-1）
+  if (currentDocument.value.readingProgress !== undefined && currentDocument.value.readingProgress > 1) {
+    historyProgress = currentDocument.value.readingProgress / 100
+  }
+  console.log('历史阅读进度（小数形式）:', historyProgress)
+  
+  // 重置分页状态（后端限制 page_size 最大为100）
   paginationState.original = {
     currentPage: 1,
     totalPages: 1,
-    pageSize: 50,
+    pageSize: 100, // 每页100个意群
     loadedPages: [],
     pageCache: {},
     nextPageLoading: false
@@ -1390,7 +1587,7 @@ const initPagination = async () => {
   paginationState.simplified = {
     currentPage: 1,
     totalPages: 1,
-    pageSize: 50,
+    pageSize: 100,
     loadedPages: [],
     pageCache: {},
     nextPageLoading: false
@@ -1400,88 +1597,143 @@ const initPagination = async () => {
   const hasOriginalSegments = currentDocument.value.segments && currentDocument.value.segments.length > 0
   const hasSimplifiedSegments = currentDocument.value.simplifiedSegments && currentDocument.value.simplifiedSegments.length > 0
   
+  // 并行处理原文本和简化文本的分页初始化
+  const promises = []
+  
   if (hasOriginalSegments) {
-    // 使用文档中已有的意群数据进行分页
+    // 使用文档中已有的意群数据进行分页（同步处理，最快）
     const allSegments = currentDocument.value.segments
     paginationState.original.totalPages = Math.ceil(allSegments.length / paginationState.original.pageSize)
     paginationState.original.pageCache[1] = allSegments.slice(0, paginationState.original.pageSize)
     paginationState.original.loadedPages = [1]
-    paginationState.original.currentPage = 1
     
-    // 如果有更多页，预加载下一页
+    // 根据历史进度设置当前页码
+    if (historyProgress > 0 && historyProgress <= 1) {
+      const targetPage = Math.max(1, Math.ceil(historyProgress * paginationState.original.totalPages))
+      paginationState.original.currentPage = Math.min(targetPage, paginationState.original.totalPages)
+      console.log('根据历史进度设置原文本页码:', paginationState.original.currentPage)
+      
+      // 加载目标页的数据
+      const startIndex = (paginationState.original.currentPage - 1) * paginationState.original.pageSize
+      paginationState.original.pageCache[paginationState.original.currentPage] = allSegments.slice(startIndex, startIndex + paginationState.original.pageSize)
+      if (!paginationState.original.loadedPages.includes(paginationState.original.currentPage)) {
+        paginationState.original.loadedPages.push(paginationState.original.currentPage)
+      }
+    } else {
+      paginationState.original.currentPage = 1
+    }
+    
+    // 如果有更多页，预加载下一页（异步，不阻塞）
     if (paginationState.original.totalPages > 1) {
-      paginationState.original.pageCache[2] = allSegments.slice(paginationState.original.pageSize, paginationState.original.pageSize * 2)
-      paginationState.original.loadedPages.push(2)
+      setTimeout(() => {
+        paginationState.original.pageCache[2] = allSegments.slice(paginationState.original.pageSize, paginationState.original.pageSize * 2)
+        paginationState.original.loadedPages.push(2)
+      }, 100)
     }
   } else {
     // 从后端获取分页数据（后端期望1-based页码）
-    const originalResult = await fetchSegments(
+    promises.push(fetchSegments(
       currentDocument.value.id, 
       1, 
       paginationState.original.pageSize, 
       'original'
-    )
-    if (originalResult) {
-      paginationState.original.pageCache[1] = originalResult.segments
-      paginationState.original.totalPages = originalResult.total_pages
-      paginationState.original.loadedPages = [1]
-      paginationState.original.currentPage = 1
-      
-      // 预加载下一页
-      if (originalResult.total_pages > 1) {
-        preloadNextPage('original')
+    ).then(originalResult => {
+      if (originalResult) {
+        paginationState.original.pageCache[1] = originalResult.segments
+        paginationState.original.totalPages = originalResult.total_pages
+        paginationState.original.loadedPages = [1]
+        
+        // 根据历史进度设置当前页码
+        if (historyProgress > 0 && historyProgress <= 1) {
+          const targetPage = Math.max(1, Math.ceil(historyProgress * paginationState.original.totalPages))
+          paginationState.original.currentPage = Math.min(targetPage, paginationState.original.totalPages)
+          console.log('根据历史进度设置原文本页码:', paginationState.original.currentPage)
+        } else {
+          paginationState.original.currentPage = 1
+        }
       }
-    } else {
-      // 如果后端请求失败，使用原始内容作为后备
-      paginationState.original.pageCache[1] = []
-      paginationState.original.totalPages = 1
-      paginationState.original.loadedPages = [1]
-      paginationState.original.currentPage = 1
-    }
+    }).catch(err => {
+      console.error('Failed to fetch original segments:', err)
+    }))
   }
   
-  // 初始化简化文本分页
-  if (currentDocument.value.simplifiedContent) {
-    if (hasSimplifiedSegments) {
-      // 使用文档中已有的简化意群数据进行分页
-      const allSegments = currentDocument.value.simplifiedSegments
-      paginationState.simplified.totalPages = Math.ceil(allSegments.length / paginationState.simplified.pageSize)
-      paginationState.simplified.pageCache[1] = allSegments.slice(0, paginationState.simplified.pageSize)
-      paginationState.simplified.loadedPages = [1]
-      paginationState.simplified.currentPage = 1
+  if (hasSimplifiedSegments) {
+    // 使用文档中已有的简化意群数据进行分页（同步处理）
+    const allSimplifiedSegments = currentDocument.value.simplifiedSegments
+    paginationState.simplified.totalPages = Math.ceil(allSimplifiedSegments.length / paginationState.simplified.pageSize)
+    paginationState.simplified.pageCache[1] = allSimplifiedSegments.slice(0, paginationState.simplified.pageSize)
+    paginationState.simplified.loadedPages = [1]
+    
+    // 根据历史进度设置当前页码
+    if (historyProgress > 0 && historyProgress <= 1) {
+      const targetPage = Math.max(1, Math.ceil(historyProgress * paginationState.simplified.totalPages))
+      paginationState.simplified.currentPage = Math.min(targetPage, paginationState.simplified.totalPages)
+      console.log('根据历史进度设置简化文本页码:', paginationState.simplified.currentPage)
       
-      // 如果有更多页，预加载下一页
-      if (paginationState.simplified.totalPages > 1) {
-        paginationState.simplified.pageCache[2] = allSegments.slice(paginationState.simplified.pageSize, paginationState.simplified.pageSize * 2)
-        paginationState.simplified.loadedPages.push(2)
+      // 加载目标页的数据
+      const startIndex = (paginationState.simplified.currentPage - 1) * paginationState.simplified.pageSize
+      paginationState.simplified.pageCache[paginationState.simplified.currentPage] = allSimplifiedSegments.slice(startIndex, startIndex + paginationState.simplified.pageSize)
+      if (!paginationState.simplified.loadedPages.includes(paginationState.simplified.currentPage)) {
+        paginationState.simplified.loadedPages.push(paginationState.simplified.currentPage)
       }
     } else {
-      // 从后端获取分页数据（后端期望1-based页码）
-      const simplifiedResult = await fetchSegments(
-        currentDocument.value.id, 
-        1, 
-        paginationState.simplified.pageSize, 
-        'simplified'
-      )
+      paginationState.simplified.currentPage = 1
+    }
+    
+    // 如果有更多页，预加载下一页（异步，不阻塞）
+    if (paginationState.simplified.totalPages > 1) {
+      setTimeout(() => {
+        paginationState.simplified.pageCache[2] = allSimplifiedSegments.slice(paginationState.simplified.pageSize, paginationState.simplified.pageSize * 2)
+        paginationState.simplified.loadedPages.push(2)
+      }, 100)
+    }
+  } else if (currentDocument.value.simplifiedContent) {
+    // 如果有简化文本但没有预计算的意群，从后端获取
+    promises.push(fetchSegments(
+      currentDocument.value.id, 
+      1, 
+      paginationState.simplified.pageSize, 
+      'simplified'
+    ).then(simplifiedResult => {
       if (simplifiedResult) {
         paginationState.simplified.pageCache[1] = simplifiedResult.segments
         paginationState.simplified.totalPages = simplifiedResult.total_pages
         paginationState.simplified.loadedPages = [1]
-        paginationState.simplified.currentPage = 1
         
-        // 预加载下一页
-        if (simplifiedResult.total_pages > 1) {
-          preloadNextPage('simplified')
+        // 根据历史进度设置当前页码
+        if (historyProgress > 0 && historyProgress <= 1) {
+          const targetPage = Math.max(1, Math.ceil(historyProgress * paginationState.simplified.totalPages))
+          paginationState.simplified.currentPage = Math.min(targetPage, paginationState.simplified.totalPages)
+          console.log('根据历史进度设置简化文本页码:', paginationState.simplified.currentPage)
+        } else {
+          paginationState.simplified.currentPage = 1
         }
-      } else {
-        // 如果后端请求失败，使用原始内容作为后备
-        paginationState.simplified.pageCache[1] = []
-        paginationState.simplified.totalPages = 1
-        paginationState.simplified.loadedPages = [1]
-        paginationState.simplified.currentPage = 1
       }
-    }
+    }).catch(err => {
+      console.error('Failed to fetch simplified segments:', err)
+    }))
   }
+  
+  // 设置朗读位置为当前页
+  setTimeout(() => {
+    setSpeechPositionToCurrentPage('original')
+    setSpeechPositionToCurrentPage('simplified')
+  }, 200)
+  
+  // 等待所有异步操作完成（但不阻塞UI）
+  if (promises.length > 0) {
+    Promise.all(promises).then(() => {
+      console.log('All segment fetching completed')
+      // 异步加载完成后再次设置朗读位置
+      setSpeechPositionToCurrentPage('original')
+      setSpeechPositionToCurrentPage('simplified')
+    }).catch(err => {
+      console.error('Error during pagination init:', err)
+    })
+  }
+  
+  // 立即返回，不等待异步操作完成
+  return
 }
 
 // 方法
@@ -1510,109 +1762,420 @@ const handleQueryWord = async () => {
   }
 }
 
-// 获取词语附近的部分上下文
+// 获取词语附近的部分上下文（改进版：在句子边界截取，保证语义完整）
 const getPartialContext = (content, word, contextLength = 200) => {
   if (!content || !word) return ''
-  
+
   const index = content.indexOf(word)
   if (index === -1) {
-    // 如果找不到词语，返回开头部分
     return content.substring(0, Math.min(contextLength * 2, content.length))
   }
-  
-  // 获取词语前后各contextLength长度的上下文
-  const start = Math.max(0, index - contextLength)
-  const end = Math.min(content.length, index + word.length + contextLength)
-  
-  let result = content.substring(start, end)
-  
-  // 如果不是从开头开始，添加省略号
-  if (start > 0) {
+
+  // 句子结束标记（包括中文标点和英文标点）
+  const sentenceEndChars = new Set(['。', '！', '？', '.', '!', '?', '；', ';'])
+  // 句子内的小停顿（可以在此处截断但不打断语义）
+  const pauseChars = new Set(['，', ',', '、', '：', ':'])
+
+  // 向前查找：找到词语所在句子的开始
+  let sentenceStart = index
+  let charsFromPause = 0
+  let charsFromSentenceEnd = 0
+
+  while (sentenceStart > 0) {
+    const char = content[sentenceStart - 1]
+
+    // 如果遇到句子结束符，检查是否达到了足够的上下文
+    if (sentenceEndChars.has(char)) {
+      break
+    }
+
+    // 计算到词语的距离
+    charsFromPause++
+    charsFromSentenceEnd++
+
+    // 如果已经向后扩展了足够多的内容（超过contextLength），强制截断
+    if (charsFromPause >= contextLength && charsFromSentenceEnd >= contextLength) {
+      break
+    }
+
+    // 如果在小停顿处且距离已够，向前扩展一点点就停止
+    if (pauseChars.has(char) && charsFromPause > 20) {
+      break
+    }
+
+    sentenceStart--
+  }
+
+  // 向后查找：找到词语所在句子的结束
+  let sentenceEnd = index + word.length
+  charsFromPause = 0
+  charsFromSentenceEnd = 0
+
+  while (sentenceEnd < content.length) {
+    const char = content[sentenceEnd]
+
+    // 遇到句子结束符，在这个位置截断（包含结束符）
+    if (sentenceEndChars.has(char)) {
+      sentenceEnd++
+      break
+    }
+
+    // 计算到词语的距离
+    charsFromPause++
+    charsFromSentenceEnd++
+
+    // 如果已经扩展了足够多的内容，强制截断
+    if (charsFromPause >= contextLength && charsFromSentenceEnd >= contextLength) {
+      break
+    }
+
+    // 如果在小停顿处且距离已够，可以选择在此截断（但不强制）
+    if (pauseChars.has(char) && charsFromPause > 50) {
+      // 不在这里截断，继续走到句子结束
+    }
+
+    sentenceEnd++
+  }
+
+  // 确保不超出文本范围
+  sentenceStart = Math.max(0, sentenceStart)
+  sentenceEnd = Math.min(content.length, sentenceEnd)
+
+  // 提取结果
+  let result = content.substring(sentenceStart, sentenceEnd)
+
+  // 如果上下文太短，向前后扩展到合理长度
+  if (result.length < contextLength) {
+    // 向前扩展
+    let expandStart = sentenceStart
+    while (expandStart > 0 && result.length < contextLength) {
+      const char = content[expandStart - 1]
+      expandStart--
+      result = char + result
+
+      // 在句子结束符处停止
+      if (sentenceEndChars.has(char)) {
+        break
+      }
+    }
+    sentenceStart = expandStart
+
+    // 向后扩展
+    let expandEnd = sentenceEnd
+    while (expandEnd < content.length && result.length < contextLength) {
+      const char = content[expandEnd]
+      result += char
+      expandEnd++
+
+      // 在句子结束符处停止
+      if (sentenceEndChars.has(char)) {
+        break
+      }
+    }
+    sentenceEnd = expandEnd
+  }
+
+  // 如果上下文仍然太短，继续扩展（不限制在句子边界）
+  while (result.length < contextLength && (sentenceStart > 0 || sentenceEnd < content.length)) {
+    // 交替向前向后扩展
+    if (sentenceStart > 0 && result.length < contextLength) {
+      sentenceStart--
+      result = content[sentenceStart] + result
+    }
+    if (sentenceEnd < content.length && result.length < contextLength) {
+      result += content[sentenceEnd]
+      sentenceEnd++
+    }
+  }
+
+  // 添加省略号标记
+  if (sentenceStart > 0) {
     result = '...' + result
   }
-  // 如果不是到结尾，添加省略号
-  if (end < content.length) {
+  if (sentenceEnd < content.length) {
     result = result + '...'
   }
-  
+
   return result
 }
 
-const getPosClass = (word, position, isSimplified = false) => {
-  const posTags = isSimplified ? currentDocument.value.simplified_pos_tags : currentDocument.value.pos_tags
-  if (!posTags) return ''
-  
-  const tag = posTags.find(tag => tag.start_pos === position)
-  if (!tag) return ''
-  
-  // 检查该词性是否在用户选中的标注列表中
-  const selectedPosTags = readerSettings.value.selectedPosTags || ['n', 'v', 'a']
-  if (!selectedPosTags.includes(tag.pos)) return ''
-  
-  // 根据词性返回不同的类名
-  const posMap = {
-    'n': 'pos-noun',
-    'v': 'pos-verb',
-    'a': 'pos-adj',
-    'd': 'pos-adv',
-    'p': 'pos-prep',
-    'c': 'pos-conj',
-    'u': 'pos-aux',
-    'r': 'pos-pron',
-    'm': 'pos-num',
-    'q': 'pos-quant',
-    't': 'pos-time',
-    's': 'pos-place',
-    'f': 'pos-dir',
-    'b': 'pos-dist',
-    'z': 'pos-state',
-    'e': 'pos-interj',
-    'y': 'pos-modal',
-    'o': 'pos-onom',
-    'h': 'pos-prefix',
-    'k': 'pos-suffix',
-    'x': 'pos-punct',
-    'w': 'pos-other'
+// 缓存词性标注索引以提高性能
+let posTagsIndex = null
+let simplifiedPosTagsIndex = null
+
+const buildPosTagsIndex = () => {
+  // 为原始文本构建索引
+  posTagsIndex = {}
+  if (currentDocument.value.pos_tags) {
+    for (const tag of currentDocument.value.pos_tags) {
+      posTagsIndex[tag.start_pos] = tag
+    }
   }
   
-  return posMap[tag.pos] || ''
+  // 为简化文本构建索引
+  simplifiedPosTagsIndex = {}
+  if (currentDocument.value.simplified_pos_tags) {
+    for (const tag of currentDocument.value.simplified_pos_tags) {
+      simplifiedPosTagsIndex[tag.start_pos] = tag
+    }
+  }
+}
+
+const getPosClass = (word, position, isSimplified = false) => {
+  // 延迟构建索引
+  if (!posTagsIndex || !simplifiedPosTagsIndex) {
+    buildPosTagsIndex()
+  }
+  
+  const index = isSimplified ? simplifiedPosTagsIndex : posTagsIndex
+  if (!index) return ''
+  
+  // 使用索引快速查找
+  const tag = index[position]
+  
+  // 如果精确匹配失败，尝试使用词匹配
+  if (!tag && word) {
+    const posTags = isSimplified ? currentDocument.value.simplified_pos_tags : currentDocument.value.pos_tags
+    if (posTags) {
+      const matchingTag = posTags.find(t => t.word === word && Math.abs(t.start_pos - position) < 5)
+      if (matchingTag) {
+        return getPosClassByTag(matchingTag)
+      }
+    }
+    return ''
+  }
+  
+  if (!tag) return ''
+  
+  return getPosClassByTag(tag)
+}
+
+// 检查词性标签是否匹配（支持前缀匹配，如'nr'匹配'n'）
+const matchesPosTag = (tag, selectedTags) => {
+  if (!tag || !selectedTags || selectedTags.length === 0) return false
+  // 如果精确匹配，直接返回true
+  if (selectedTags.includes(tag)) {
+    return true
+  }
+  // 检查前缀匹配（如'nr'匹配'n'，'vd'匹配'v'）
+  return selectedTags.some(selected => tag.startsWith(selected))
+}
+
+const getPosClassByTag = (tag) => {
+  // 检查该词性是否在用户选中的标注列表中（支持前缀匹配）
+  const selectedPosTags = readerSettings.value.selectedPosTags || ['n', 'v', 'a']
+  if (!matchesPosTag(tag.pos, selectedPosTags)) {
+    // 未选中的词性不显示
+    return ''
+  }
+  return 'word-tag-highlight'
+}
+
+const getPosStyle = (word, position, isSimplified = false) => {
+  // 延迟构建索引
+  if (!posTagsIndex || !simplifiedPosTagsIndex) {
+    buildPosTagsIndex()
+  }
+  
+  const index = isSimplified ? simplifiedPosTagsIndex : posTagsIndex
+  if (!index) return {}
+  
+  // 使用索引快速查找
+  const tag = index[position]
+  
+  // 如果精确匹配失败，尝试使用词匹配
+  if (!tag && word) {
+    const posTags = isSimplified ? currentDocument.value.simplified_pos_tags : currentDocument.value.pos_tags
+    if (posTags) {
+      const matchingTag = posTags.find(t => t.word === word && Math.abs(t.start_pos - position) < 5)
+      if (matchingTag) {
+        return getPosStyleByTag(matchingTag)
+      }
+    }
+    return {}
+  }
+  
+  if (!tag) return {}
+  
+  return getPosStyleByTag(tag)
+}
+
+const getPosStyleByTag = (tag) => {
+  // 检查该词性是否在用户选中的标注列表中
+  const selectedPosTags = readerSettings.value.selectedPosTags || ['n', 'v', 'a']
+  
+  // 获取用户设置的词性颜色
+  const posColors = readerSettings.value.posColors || {}
+  const color = posColors[tag.pos] || readerSettings.value.textColor
+  
+  // 返回样式对象：只设置颜色，字号保持与用户设置一致（不单独设置字号）
+  // 无论是否在选中列表中，都返回样式
+  return {
+    color: color
+  }
 }
 
 const getPosFontSize = (word, position, isSimplified = false) => {
-  const posTags = isSimplified ? currentDocument.value.simplified_pos_tags : currentDocument.value.pos_tags
-  if (!posTags) return {}
-  
-  const tag = posTags.find(tag => tag.start_pos === position)
-  if (!tag) return {}
-  
-  // 检查该词性是否在用户选中的标注列表中
-  const selectedPosTags = readerSettings.value.selectedPosTags || ['n', 'v', 'a']
-  if (!selectedPosTags.includes(tag.pos)) return {}
-  
-  // 返回空对象，使用基础字体大小（与普通文字一致）
+  // 不再单独设置字号，字号由父元素控制
   return {}
 }
 
-const getSegmentWords = (segmentText, segmentStartPos, isSimplified = false) => {
-  const posTags = isSimplified ? currentDocument.value.simplified_pos_tags : currentDocument.value.pos_tags
-  if (!posTags || !segmentText) return []
+const getSegmentWords = (segmentText, segmentStartPos, isSimplified = false, segment = null) => {
+  // 优先使用segment自己的词性标注（位置基于segment内部，从0开始）
+  // 如果segment没有单独的词性标注，回退到全局词性标注（位置基于整个文档）
+  const segmentPosTags = segment ? segment.pos_tags : null
+  const isUsingSegmentPosTags = segmentPosTags && segmentPosTags.length > 0
+  const posTags = isUsingSegmentPosTags 
+    ? segmentPosTags 
+    : (isSimplified ? currentDocument.value.simplified_pos_tags : currentDocument.value.pos_tags)
+  const selectedPosTags = readerSettings.value.selectedPosTags || ['n', 'v', 'a']
   
-  const endPos = segmentStartPos + segmentText.length
+  // 如果没有词性标注，直接返回整个意群文本作为一个普通文本块
+  if (!posTags || !segmentText || posTags.length === 0) {
+    return [{
+      text: segmentText,
+      position: segmentStartPos,
+      isPlainText: true
+    }]
+  }
+  
+  // 关键：根据使用的是segment.pos_tags还是全局pos_tags，使用不同的文本进行匹配
+  // segment.pos_tags是基于segment.text生成的，所以直接使用segmentText
+  // 全局pos_tags是基于整个文档生成的，所以需要从原文本中截取对应位置的内容
+  let textToProcess
+  if (isUsingSegmentPosTags) {
+    // 使用segment自己的词性标注时，直接使用segmentText
+    textToProcess = segmentText
+  } else {
+    // 使用全局词性标注时，从原文本中截取对应位置的内容
+    const sourceText = isSimplified 
+      ? (currentDocument.value.simplifiedContent || currentDocument.value.content)
+      : currentDocument.value.content
+    textToProcess = sourceText 
+      ? sourceText.substring(segmentStartPos, segmentStartPos + segmentText.length)
+      : segmentText
+  }
+    
+  // 根据使用的pos_tags类型，计算segment的结束位置
+  const segmentEndPos = isUsingSegmentPosTags 
+    ? textToProcess.length  // segment内部位置，从0开始
+    : segmentStartPos + textToProcess.length  // 全局位置
+    
+  // 过滤出在当前segment范围内且用户选中的词性标注
+  const tagsInSegment = posTags
+    .filter(tag => {
+      // 根据使用的pos_tags类型，使用不同的位置判断逻辑
+      let positionMatch
+      if (isUsingSegmentPosTags) {
+        // segment.pos_tags的位置是基于segment内部的（从0开始）
+        positionMatch = tag.start_pos >= 0 && tag.start_pos + tag.word.length <= textToProcess.length
+      } else {
+        // 全局pos_tags的位置是基于整个文档的
+        positionMatch = tag.start_pos >= segmentStartPos && tag.start_pos + tag.word.length <= segmentEndPos
+      }
+      return positionMatch &&
+             tag.word && tag.word.trim() &&
+             matchesPosTag(tag.pos, selectedPosTags)
+    })
+    .sort((a, b) => {
+      if (a.start_pos !== b.start_pos) {
+        return a.start_pos - b.start_pos
+      }
+      return b.word.length - a.word.length
+    })
+  
+  // 如果没有选中的词性标注，直接返回整个意群
+  if (tagsInSegment.length === 0) {
+    return [{
+      text: textToProcess,
+      position: segmentStartPos,
+      isPlainText: true
+    }]
+  }
+  
   const words = []
+  let currentPos = 0
   
-  for (let i = 0; i < posTags.length; i++) {
-    const tag = posTags[i]
-    if (tag.start_pos >= segmentStartPos && tag.start_pos < endPos) {
-      words.push({
-        text: tag.word,
-        position: tag.start_pos
-      })
+  while (currentPos < textToProcess.length) {
+    // 根据使用的pos_tags类型，计算当前位置
+    const currentMatchPos = isUsingSegmentPosTags 
+      ? currentPos  // segment.pos_tags: 使用相对位置
+      : segmentStartPos + currentPos  // 全局pos_tags: 使用绝对位置
+    
+    // 查找从当前位置开始的标注词
+    const matchingTag = tagsInSegment.find(tag => tag.start_pos === currentMatchPos)
+    
+    if (matchingTag) {
+      // 计算这个标注词在segment中的相对结束位置
+      const tagRelativeEnd = isUsingSegmentPosTags 
+        ? matchingTag.start_pos + matchingTag.word.length  // segment.pos_tags: 直接相加
+        : matchingTag.start_pos + matchingTag.word.length - segmentStartPos  // 全局pos_tags: 转换为相对位置
+      
+      // 确保不超出segment范围
+      if (tagRelativeEnd <= textToProcess.length) {
+        // 获取segment中对应位置的文本
+        const actualText = textToProcess.substring(currentPos, tagRelativeEnd)
+        
+        if (actualText === matchingTag.word) {
+          // 匹配成功，添加标注词
+          words.push({
+            text: matchingTag.word,
+            position: matchingTag.start_pos,
+            tag: matchingTag
+          })
+          currentPos = tagRelativeEnd
+          continue
+        }
+      }
     }
+    
+    // 如果没有找到匹配的标注词，或者匹配失败，添加普通文本字符
+    const charPosition = isUsingSegmentPosTags 
+      ? currentPos  // segment.pos_tags: 使用相对位置
+      : segmentStartPos + currentPos  // 全局pos_tags: 使用绝对位置
+    
+    words.push({
+      text: textToProcess[currentPos],
+      position: charPosition,
+      isPlainText: true
+    })
+    currentPos++
   }
   
   return words
 }
 
+
+// 获取当前可见区域的第一个意群
+const getFirstVisibleSegment = (type) => {
+  const element = type === 'original' ? originalContentRef.value : simplifiedContentRef.value
+  if (!element) return null
+  
+  // 获取可见区域的边界
+  const rect = element.getBoundingClientRect()
+  const visibleTop = rect.top
+  const visibleBottom = rect.bottom
+
+  // 找到可见区域内的第一个意群
+  const segmentElements = type === 'original' 
+    ? element.querySelectorAll('.text-segment')
+    : element.querySelectorAll('.simplified-text-segment')
+  
+  for (const segmentElement of segmentElements) {
+    const segmentRect = segmentElement.getBoundingClientRect()
+    // 检查意群是否在可见区域内
+    if (segmentRect.top < visibleBottom && segmentRect.bottom > visibleTop) {
+      // 获取意群ID并查找对应的意群数据
+      const segmentId = segmentElement.getAttribute('data-segment-id')
+      if (segmentId) {
+        const segmentsList = type === 'original' ? segments.value : simplifiedSegments.value
+        return segmentsList.find(s => s.id === segmentId) || null
+      }
+    }
+  }
+  
+  return null
+}
 
 // 原文本朗读方法
 const startOriginalSpeech = async (startFromPosition = null) => {
@@ -1631,21 +2194,30 @@ const startOriginalSpeech = async (startFromPosition = null) => {
     // 如果传入了指定位置，使用传入的位置（如拖动音频条）
     startPosition = startFromPosition
   } else {
-    // 用户主动点击播放，从当前页面的第一个意群开始
-    const currentPage = paginationState.original.currentPage
-    const pageSize = paginationState.original.pageSize
+    // 用户主动点击播放，从当前可见区域的第一个意群开始
+    // 先尝试获取当前可见区域的第一个意群
+    const visibleSegment = getFirstVisibleSegment('original')
     
-    // 计算当前页面的起始意群索引
-    const startSegmentIndex = (currentPage - 1) * pageSize
-    
-    // 获取当前页面的第一个意群
-    if (segments.value.length > 0 && startSegmentIndex < segments.value.length) {
-      const firstSegment = segments.value[startSegmentIndex]
-      startPosition = firstSegment.start_pos || 0
+    if (visibleSegment) {
+      // 使用可见区域的第一个意群位置
+      startPosition = visibleSegment.start_pos || 0
     } else {
-      // 如果没有意群数据，使用估算值
-      const estimatedCharsPerSegment = 20
-      startPosition = startSegmentIndex * estimatedCharsPerSegment
+      // 如果无法获取可见意群，使用分页状态作为备选
+      const currentPage = paginationState.original.currentPage
+      const pageSize = paginationState.original.pageSize
+      
+      // 计算当前页面的起始意群索引
+      const startSegmentIndex = (currentPage - 1) * pageSize
+      
+      // 获取当前页面的第一个意群
+      if (segments.value.length > 0 && startSegmentIndex < segments.value.length) {
+        const firstSegment = segments.value[startSegmentIndex]
+        startPosition = firstSegment.start_pos || 0
+      } else {
+        // 如果没有意群数据，使用估算值
+        const estimatedCharsPerSegment = 20
+        startPosition = startSegmentIndex * estimatedCharsPerSegment
+      }
     }
     
     // 确保不超过文本长度
@@ -1661,8 +2233,19 @@ const startOriginalSpeech = async (startFromPosition = null) => {
     originalSpeechPosition.value = 0
   }
   
-  // 截取从指定位置开始的文本
-  const text = fullText.substring(startPosition)
+  // 获取从当前位置开始的所有意群文本（确保从完整的意群开始朗读）
+  let text = ''
+  const startSegmentIndex = segments.value.findIndex(s => s.start_pos <= startPosition && s.end_pos > startPosition)
+  
+  if (startSegmentIndex >= 0) {
+    // 从当前意群开始，拼接所有后续意群的文本
+    for (let i = startSegmentIndex; i < segments.value.length; i++) {
+      text += segments.value[i].text
+    }
+  } else {
+    // 如果找不到对应意群，使用字符截取作为备选
+    text = fullText.substring(startPosition)
+  }
   
   isSpeakingOriginal.value = true
   originalProgress.value = (startPosition / fullText.length) * 100
@@ -1730,28 +2313,136 @@ const startOriginalSpeech = async (startFromPosition = null) => {
   }
 }
 
-const stopOriginalSpeech = () => {
-  // 先记录当前朗读位置（字符索引），避免被后续操作重置
+// 暂停原文本朗读（保持位置，可恢复）
+const pauseOriginalSpeech = () => {
+  if (!isSpeakingOriginal.value && !isOriginalPaused.value) {
+    return
+  }
+  
+  // 记录当前朗读位置
   let currentPosition = originalSpeechPosition.value
   
   // 尝试通过音频元素的当前时间计算更精确的位置
   if (originalAudio.value && originalAudio.value.duration > 0) {
     const fullText = currentDocument.value.content || ''
     const progress = originalAudio.value.currentTime / originalAudio.value.duration
-    currentPosition = Math.floor(progress * fullText.length)
+    currentPosition = originalSpeechPosition.value + Math.floor(progress * (fullText.length - originalSpeechPosition.value))
   } else if (currentOriginalSegment.value && segments.value.length > 0) {
-    // 如果没有音频元素，使用当前意群的位置
     const segment = segments.value.find(s => s.id === currentOriginalSegment.value)
     if (segment) {
       currentPosition = segment.start_pos || 0
     }
   }
   
+  // 保存暂停位置
+  originalPausedPosition.value = currentPosition
+  originalSpeechPosition.value = currentPosition
+  
   if (originalAudio.value) {
-    // 停止音频播放（适用于Edge-TTS和pyttsx3）
+    originalAudio.value.pause()
+  }
+  
+  if ('speechSynthesis' in window) {
+    speechSynthesis.pause()
+  }
+  
+  isSpeakingOriginal.value = false
+  isOriginalPaused.value = true
+  // 保持高亮在当前位置
+}
+
+// 恢复原文本朗读（从暂停位置继续）
+const resumeOriginalSpeech = async () => {
+  if (!isOriginalPaused.value) {
+    // 如果不是暂停状态，正常开始朗读
+    startOriginalSpeech()
+    return
+  }
+  
+  // 从暂停位置恢复朗读
+  const startPosition = originalPausedPosition.value
+  originalSpeechPosition.value = startPosition
+  isOriginalPaused.value = false
+  isSpeakingOriginal.value = true
+  
+  const fullText = currentDocument.value.content
+  
+  // 获取从暂停位置开始的所有意群文本（确保从完整的意群开始朗读）
+  let text = ''
+  let resumeSegmentId = null
+  const startSegmentIndex = segments.value.findIndex(s => s.start_pos <= startPosition && s.end_pos > startPosition)
+  
+  if (startSegmentIndex >= 0) {
+    // 从当前意群开始，拼接所有后续意群的文本
+    for (let i = startSegmentIndex; i < segments.value.length; i++) {
+      text += segments.value[i].text
+    }
+    // 记录恢复时的起始意群ID，用于正确计算高亮
+    resumeSegmentId = segments.value[startSegmentIndex].id
+  } else {
+    // 如果找不到对应意群，使用字符截取作为备选
+    text = fullText.substring(startPosition)
+  }
+  
+  // 在蒙版模式下，滚动到当前位置
+  if (isOriginalFullScreen.value && readerSettings.value.enableMask && originalContentRef.value) {
+    nextTick(() => {
+      const segment = segments.value.find(s => s.start_pos <= startPosition && s.end_pos > startPosition)
+      if (segment) {
+        const targetElement = originalContentRef.value.querySelector(`[data-segment-id="${segment.id}"]`)
+        if (targetElement) {
+          scrollToElement(originalContentRef.value, targetElement, 'original')
+        }
+      }
+    })
+  }
+  
+  try {
+    const audioBlob = await pyttsx3(
+      text,
+      Math.round((readerSettings.value.speechRate || 1.0) * 150),
+      readerSettings.value.speechVolume || 1.0
+    )
+    
+    originalAudio.value = playPyttsx3(audioBlob, () => {
+      isSpeakingOriginal.value = false
+      isOriginalPaused.value = false
+      currentOriginalSegment.value = null
+      originalAudio.value = null
+    })
+    
+    // 立即设置高亮为恢复时的起始意群（避免等待音频加载）
+    if (resumeSegmentId) {
+      currentOriginalSegment.value = resumeSegmentId
+    } else {
+      // 尝试根据位置找到对应意群
+      const segment = segments.value.find(s => s.start_pos <= startPosition && s.end_pos > startPosition)
+      if (segment) {
+        currentOriginalSegment.value = segment.id
+      }
+    }
+    
+    // 开始高亮意群
+    highlightOriginalSegments()
+  } catch (error) {
+    console.error('pyttsx3调用失败:', error)
+    isSpeakingOriginal.value = false
+    isOriginalPaused.value = false
+  }
+}
+
+// 停止原文本朗读（完全停止，重置位置）
+const stopOriginalSpeech = () => {
+  // 记录当前位置以备恢复（如果是暂停状态）
+  const wasPaused = isOriginalPaused.value
+  const pausedPos = originalPausedPosition.value
+  
+  // 清除暂停状态
+  isOriginalPaused.value = false
+  
+  if (originalAudio.value) {
     originalAudio.value.pause()
     originalAudio.value.currentTime = 0
-    // 移除所有事件监听器
     originalAudio.value.removeEventListener('timeupdate', () => {})
     originalAudio.value.removeEventListener('ended', () => {})
     originalAudio.value = null
@@ -1761,12 +2452,29 @@ const stopOriginalSpeech = () => {
     speechSynthesis.cancel()
   }
   
-  // 保存当前位置
-  originalSpeechPosition.value = currentPosition
-  
+  // 重置位置
+  originalSpeechPosition.value = 0
+  originalPausedPosition.value = 0
   isSpeakingOriginal.value = false
-  // 不要清除当前高亮，保持在原位置
-  // currentOriginalSegment.value = null
+  
+  // 如果是从暂停状态停止，保持高亮在原位；否则清除高亮
+  if (!wasPaused) {
+    currentOriginalSegment.value = null
+  }
+}
+
+// 处理原文本播放/暂停按钮点击
+const handleOriginalPlayPause = () => {
+  if (isSpeakingOriginal.value) {
+    // 正在播放 -> 暂停
+    pauseOriginalSpeech()
+  } else if (isOriginalPaused.value) {
+    // 暂停状态 -> 恢复播放
+    resumeOriginalSpeech()
+  } else {
+    // 停止状态 -> 开始播放（从当前页开始）
+    startOriginalSpeech()
+  }
 }
 
 const seekOriginalSpeech = (value) => {
@@ -1860,21 +2568,30 @@ const startSimplifiedSpeech = async (startFromPosition = null) => {
     // 如果传入了指定位置，使用传入的位置（如拖动音频条）
     startPosition = startFromPosition
   } else {
-    // 用户主动点击播放，从当前页面的第一个意群开始
-    const currentPage = paginationState.simplified.currentPage
-    const pageSize = paginationState.simplified.pageSize
+    // 用户主动点击播放，从当前可见区域的第一个意群开始
+    // 先尝试获取当前可见区域的第一个意群
+    const visibleSegment = getFirstVisibleSegment('simplified')
     
-    // 计算当前页面的起始意群索引
-    const startSegmentIndex = (currentPage - 1) * pageSize
-    
-    // 获取当前页面的第一个意群
-    if (simplifiedSegments.value.length > 0 && startSegmentIndex < simplifiedSegments.value.length) {
-      const firstSegment = simplifiedSegments.value[startSegmentIndex]
-      startPosition = firstSegment.start_pos || 0
+    if (visibleSegment) {
+      // 使用可见区域的第一个意群位置
+      startPosition = visibleSegment.start_pos || 0
     } else {
-      // 如果没有意群数据，使用估算值
-      const estimatedCharsPerSegment = 20
-      startPosition = startSegmentIndex * estimatedCharsPerSegment
+      // 如果无法获取可见意群，使用分页状态作为备选
+      const currentPage = paginationState.simplified.currentPage
+      const pageSize = paginationState.simplified.pageSize
+      
+      // 计算当前页面的起始意群索引
+      const startSegmentIndex = (currentPage - 1) * pageSize
+      
+      // 获取当前页面的第一个意群
+      if (simplifiedSegments.value.length > 0 && startSegmentIndex < simplifiedSegments.value.length) {
+        const firstSegment = simplifiedSegments.value[startSegmentIndex]
+        startPosition = firstSegment.start_pos || 0
+      } else {
+        // 如果没有意群数据，使用估算值
+        const estimatedCharsPerSegment = 20
+        startPosition = startSegmentIndex * estimatedCharsPerSegment
+      }
     }
     
     // 确保不超过文本长度
@@ -1890,8 +2607,19 @@ const startSimplifiedSpeech = async (startFromPosition = null) => {
     simplifiedSpeechPosition.value = 0
   }
   
-  // 截取从指定位置开始的文本
-  const text = fullText.substring(startPosition)
+  // 获取从当前位置开始的所有意群文本（确保从完整的意群开始朗读）
+  let text = ''
+  const startSegmentIndex = simplifiedSegments.value.findIndex(s => s.start_pos <= startPosition && s.end_pos > startPosition)
+  
+  if (startSegmentIndex >= 0) {
+    // 从当前意群开始，拼接所有后续意群的文本
+    for (let i = startSegmentIndex; i < simplifiedSegments.value.length; i++) {
+      text += simplifiedSegments.value[i].text
+    }
+  } else {
+    // 如果找不到对应意群，使用字符截取作为备选
+    text = fullText.substring(startPosition)
+  }
   
   isSpeakingSimplified.value = true
   simplifiedProgress.value = (startPosition / fullText.length) * 100
@@ -1960,27 +2688,15 @@ const startSimplifiedSpeech = async (startFromPosition = null) => {
 }
 
 const stopSimplifiedSpeech = () => {
-  // 先记录当前朗读位置（字符索引），避免被后续操作重置
-  let currentPosition = simplifiedSpeechPosition.value
+  // 记录当前位置以备恢复（如果是暂停状态）
+  const wasPaused = isSimplifiedPaused.value
   
-  // 尝试通过音频元素的当前时间计算更精确的位置
-  if (simplifiedAudio.value && simplifiedAudio.value.duration > 0) {
-    const fullText = currentDocument.value.simplifiedContent || ''
-    const progress = simplifiedAudio.value.currentTime / simplifiedAudio.value.duration
-    currentPosition = Math.floor(progress * fullText.length)
-  } else if (currentSimplifiedSegment.value && simplifiedSegments.value.length > 0) {
-    // 如果没有音频元素，使用当前意群的位置
-    const segment = simplifiedSegments.value.find(s => s.id === currentSimplifiedSegment.value)
-    if (segment) {
-      currentPosition = segment.start_pos || 0
-    }
-  }
+  // 清除暂停状态
+  isSimplifiedPaused.value = false
   
   if (simplifiedAudio.value) {
-    // 停止音频播放（适用于Edge-TTS和pyttsx3）
     simplifiedAudio.value.pause()
     simplifiedAudio.value.currentTime = 0
-    // 移除所有事件监听器
     simplifiedAudio.value.removeEventListener('timeupdate', () => {})
     simplifiedAudio.value.removeEventListener('ended', () => {})
     simplifiedAudio.value = null
@@ -1990,12 +2706,147 @@ const stopSimplifiedSpeech = () => {
     speechSynthesis.cancel()
   }
   
-  // 保存当前位置
+  // 重置位置
+  simplifiedSpeechPosition.value = 0
+  simplifiedPausedPosition.value = 0
+  isSpeakingSimplified.value = false
+  
+  // 如果是从暂停状态停止，保持高亮在原位；否则清除高亮
+  if (!wasPaused) {
+    currentSimplifiedSegment.value = null
+  }
+}
+
+// 暂停简化文本朗读（保持位置，可恢复）
+const pauseSimplifiedSpeech = () => {
+  if (!isSpeakingSimplified.value && !isSimplifiedPaused.value) {
+    return
+  }
+  
+  // 记录当前朗读位置
+  let currentPosition = simplifiedSpeechPosition.value
+  
+  // 尝试通过音频元素的当前时间计算更精确的位置
+  if (simplifiedAudio.value && simplifiedAudio.value.duration > 0) {
+    const fullText = currentDocument.value.simplifiedContent || ''
+    const progress = simplifiedAudio.value.currentTime / simplifiedAudio.value.duration
+    currentPosition = simplifiedSpeechPosition.value + Math.floor(progress * (fullText.length - simplifiedSpeechPosition.value))
+  } else if (currentSimplifiedSegment.value && simplifiedSegments.value.length > 0) {
+    const segment = simplifiedSegments.value.find(s => s.id === currentSimplifiedSegment.value)
+    if (segment) {
+      currentPosition = segment.start_pos || 0
+    }
+  }
+  
+  // 保存暂停位置
+  simplifiedPausedPosition.value = currentPosition
   simplifiedSpeechPosition.value = currentPosition
   
+  if (simplifiedAudio.value) {
+    simplifiedAudio.value.pause()
+  }
+  
+  if ('speechSynthesis' in window) {
+    speechSynthesis.pause()
+  }
+  
   isSpeakingSimplified.value = false
-  // 不要清除当前高亮，保持在原位置
-  // currentSimplifiedSegment.value = null
+  isSimplifiedPaused.value = true
+  // 保持高亮在当前位置
+}
+
+// 恢复简化文本朗读（从暂停位置继续）
+const resumeSimplifiedSpeech = async () => {
+  if (!isSimplifiedPaused.value) {
+    // 如果不是暂停状态，正常开始朗读
+    startSimplifiedSpeech()
+    return
+  }
+  
+  // 从暂停位置恢复朗读
+  const startPosition = simplifiedPausedPosition.value
+  simplifiedSpeechPosition.value = startPosition
+  isSimplifiedPaused.value = false
+  isSpeakingSimplified.value = true
+  
+  const fullText = currentDocument.value.simplifiedContent
+  
+  // 获取从暂停位置开始的所有意群文本（确保从完整的意群开始朗读）
+  let text = ''
+  let resumeSegmentId = null
+  const startSegmentIndex = simplifiedSegments.value.findIndex(s => s.start_pos <= startPosition && s.end_pos > startPosition)
+  
+  if (startSegmentIndex >= 0) {
+    // 从当前意群开始，拼接所有后续意群的文本
+    for (let i = startSegmentIndex; i < simplifiedSegments.value.length; i++) {
+      text += simplifiedSegments.value[i].text
+    }
+    // 记录恢复时的起始意群ID，用于正确计算高亮
+    resumeSegmentId = simplifiedSegments.value[startSegmentIndex].id
+  } else {
+    // 如果找不到对应意群，使用字符截取作为备选
+    text = fullText.substring(startPosition)
+  }
+  
+  // 在蒙版模式下，滚动到当前位置
+  if (isSimplifiedFullScreen.value && readerSettings.value.enableMask && simplifiedContentRef.value) {
+    nextTick(() => {
+      const segment = simplifiedSegments.value.find(s => s.start_pos <= startPosition && s.end_pos > startPosition)
+      if (segment) {
+        const targetElement = simplifiedContentRef.value.querySelector(`[data-segment-id="${segment.id}"]`)
+        if (targetElement) {
+          scrollToElement(simplifiedContentRef.value, targetElement, 'simplified')
+        }
+      }
+    })
+  }
+  
+  try {
+    const audioBlob = await pyttsx3(
+      text,
+      Math.round((readerSettings.value.speechRate || 1.0) * 150),
+      readerSettings.value.speechVolume || 1.0
+    )
+    
+    simplifiedAudio.value = playPyttsx3(audioBlob, () => {
+      isSpeakingSimplified.value = false
+      isSimplifiedPaused.value = false
+      currentSimplifiedSegment.value = null
+      simplifiedAudio.value = null
+    })
+    
+    // 立即设置高亮为恢复时的起始意群（避免等待音频加载）
+    if (resumeSegmentId) {
+      currentSimplifiedSegment.value = resumeSegmentId
+    } else {
+      // 尝试根据位置找到对应意群
+      const segment = simplifiedSegments.value.find(s => s.start_pos <= startPosition && s.end_pos > startPosition)
+      if (segment) {
+        currentSimplifiedSegment.value = segment.id
+      }
+    }
+    
+    // 开始高亮意群
+    highlightSimplifiedSegments()
+  } catch (error) {
+    console.error('pyttsx3调用失败:', error)
+    isSpeakingSimplified.value = false
+    isSimplifiedPaused.value = false
+  }
+}
+
+// 处理简化文本播放/暂停按钮点击
+const handleSimplifiedPlayPause = () => {
+  if (isSpeakingSimplified.value) {
+    // 正在播放 -> 暂停
+    pauseSimplifiedSpeech()
+  } else if (isSimplifiedPaused.value) {
+    // 暂停状态 -> 恢复播放
+    resumeSimplifiedSpeech()
+  } else {
+    // 停止状态 -> 开始播放（从当前页开始）
+    startSimplifiedSpeech()
+  }
 }
 
 const seekSimplifiedSpeech = (value) => {
@@ -2320,21 +3171,31 @@ const handleUserScroll = (type) => {
       : element.querySelectorAll('.simplified-text-segment')
     
     let firstVisibleSegment = null
-    for (const segment of segmentElements) {
-      const segmentRect = segment.getBoundingClientRect()
+    let firstVisibleSegmentIndex = -1
+    for (let i = 0; i < segmentElements.length; i++) {
+      const segmentRect = segmentElements[i].getBoundingClientRect()
       if (segmentRect.top < visibleBottom && segmentRect.bottom > visibleTop) {
-        firstVisibleSegment = segment
+        firstVisibleSegment = segmentElements[i]
+        firstVisibleSegmentIndex = i
         break
       }
     }
 
     // 如果找到可见区域内的意群，从该意群开始朗读
-    if (firstVisibleSegment) {
+    if (firstVisibleSegment && firstVisibleSegmentIndex >= 0) {
       const segmentId = firstVisibleSegment.getAttribute('data-segment-id')
       if (segmentId) {
         // 计算该意群对应的文本位置
         const segmentsList = type === 'original' ? segments.value : simplifiedSegments.value
         const segment = segmentsList.find(s => s.id === segmentId)
+        
+        // 更新当前页码（根据可见的第一个意群计算）
+        const pageSize = paginationState[type].pageSize
+        const targetPage = Math.ceil((firstVisibleSegmentIndex + 1) / pageSize)
+        if (targetPage !== paginationState[type].currentPage) {
+          paginationState[type].currentPage = targetPage
+        }
+        
         if (segment) {
           const startPosition = segment.start_pos || 0
           // 从该位置开始朗读
@@ -2348,7 +3209,7 @@ const handleUserScroll = (type) => {
               isSpeakingOriginal.value = false
             }
             // 从新位置开始朗读
-            startSpeech(startPosition, 'original')
+            startOriginalSpeech(startPosition)
           } else {
             // 停止当前播放
             if (isSpeakingSimplified.value) {
@@ -2359,7 +3220,7 @@ const handleUserScroll = (type) => {
               isSpeakingSimplified.value = false
             }
             // 从新位置开始朗读
-            startSimplifiedSpeech(startPosition, 'simplified')
+            startSimplifiedSpeech(startPosition)
           }
         }
       }
@@ -2455,7 +3316,7 @@ const highlightOriginalSegments = () => {
       }
     }
     
-    // 使用requestAnimationFrame实现更精确的实时同步
+    // 使用requestAnimationFrame实现更精确的实时同步（意群级同步）
     const syncHighlight = () => {
       if (!isSpeakingOriginal.value || !audioElement) {
         return
@@ -2466,22 +3327,40 @@ const highlightOriginalSegments = () => {
       // 获取当前播放位置
       const currentTime = audioElement.currentTime
       
-      // 计算当前在完整文本中的位置
-      const progress = Math.min(currentTime / totalDuration, 1)
-      const targetCharIndex = originalSpeechPosition.value + Math.floor(progress * (fullText.length - originalSpeechPosition.value))
-      
-      // 找到包含该字符位置的意群
-      let currentSegmentId = null
-      for (const segment of segmentsWithPositions) {
-        if (targetCharIndex >= segment.startIndex && targetCharIndex < segment.endIndex) {
-          currentSegmentId = segment.id
+      // 找到朗读起始位置对应的意群索引（起始意群是从该位置开始的第一个完整意群）
+      let startSegmentIndex = 0
+      for (let i = 0; i < segmentsWithPositions.length; i++) {
+        if (originalSpeechPosition.value >= segmentsWithPositions[i].startIndex && 
+            originalSpeechPosition.value < segmentsWithPositions[i].endIndex) {
+          startSegmentIndex = i
           break
         }
       }
       
-      // 如果找不到，使用最接近的意群
-      if (!currentSegmentId) {
-        currentSegmentId = getCurrentSegmentByProgress(segmentsWithPositions, fullText, currentTime, totalDuration)
+      // 计算起始意群内的字符偏移（恢复时可能在意群中间开始）
+      const startSegment = segmentsWithPositions[startSegmentIndex]
+      const charOffsetInStartSegment = originalSpeechPosition.value - startSegment.startIndex
+      
+      // 计算从起始意群开始的所有意群的总字符数
+      let totalCharsFromStart = 0
+      for (let i = startSegmentIndex; i < segmentsWithPositions.length; i++) {
+        totalCharsFromStart += segmentsWithPositions[i].text.length
+      }
+      
+      // 计算当前应该读到的字符位置（在意群范围内，加上起始意群内的偏移）
+      const progress = Math.min(currentTime / totalDuration, 1)
+      const currentCharOffset = Math.floor(progress * totalCharsFromStart) + charOffsetInStartSegment
+      
+      // 找到当前正在朗读的意群（意群级同步）
+      let currentSegmentId = null
+      let accumulatedChars = 0
+      for (let i = startSegmentIndex; i < segmentsWithPositions.length; i++) {
+        const segment = segmentsWithPositions[i]
+        if (currentCharOffset < accumulatedChars + segment.text.length) {
+          currentSegmentId = segment.id
+          break
+        }
+        accumulatedChars += segment.text.length
       }
       
       if (currentSegmentId !== currentOriginalSegment.value) {
@@ -2637,7 +3516,7 @@ const highlightSimplifiedSegments = () => {
       }
     }
     
-    // 使用requestAnimationFrame实现更精确的实时同步
+    // 使用requestAnimationFrame实现更精确的实时同步（意群级同步）
     const syncHighlight = () => {
       if (!isSpeakingSimplified.value || !audioElement) {
         return
@@ -2648,22 +3527,40 @@ const highlightSimplifiedSegments = () => {
       // 获取当前播放位置
       const currentTime = audioElement.currentTime
       
-      // 计算当前在完整文本中的位置
-      const progress = Math.min(currentTime / totalDuration, 1)
-      const targetCharIndex = simplifiedSpeechPosition.value + Math.floor(progress * (fullText.length - simplifiedSpeechPosition.value))
-      
-      // 找到包含该字符位置的意群
-      let currentSegmentId = null
-      for (const segment of segmentsWithPositions) {
-        if (targetCharIndex >= segment.startIndex && targetCharIndex < segment.endIndex) {
-          currentSegmentId = segment.id
+      // 找到朗读起始位置对应的意群索引（起始意群是从该位置开始的第一个完整意群）
+      let startSegmentIndex = 0
+      for (let i = 0; i < segmentsWithPositions.length; i++) {
+        if (simplifiedSpeechPosition.value >= segmentsWithPositions[i].startIndex && 
+            simplifiedSpeechPosition.value < segmentsWithPositions[i].endIndex) {
+          startSegmentIndex = i
           break
         }
       }
       
-      // 如果找不到，使用最接近的意群
-      if (!currentSegmentId) {
-        currentSegmentId = getCurrentSegmentByProgress(segmentsWithPositions, fullText, currentTime, totalDuration)
+      // 计算起始意群内的字符偏移（恢复时可能在意群中间开始）
+      const startSegment = segmentsWithPositions[startSegmentIndex]
+      const charOffsetInStartSegment = simplifiedSpeechPosition.value - startSegment.startIndex
+      
+      // 计算从起始意群开始的所有意群的总字符数
+      let totalCharsFromStart = 0
+      for (let i = startSegmentIndex; i < segmentsWithPositions.length; i++) {
+        totalCharsFromStart += segmentsWithPositions[i].text.length
+      }
+      
+      // 计算当前应该读到的字符位置（在意群范围内，加上起始意群内的偏移）
+      const progress = Math.min(currentTime / totalDuration, 1)
+      const currentCharOffset = Math.floor(progress * totalCharsFromStart) + charOffsetInStartSegment
+      
+      // 找到当前正在朗读的意群（意群级同步）
+      let currentSegmentId = null
+      let accumulatedChars = 0
+      for (let i = startSegmentIndex; i < segmentsWithPositions.length; i++) {
+        const segment = segmentsWithPositions[i]
+        if (currentCharOffset < accumulatedChars + segment.text.length) {
+          currentSegmentId = segment.id
+          break
+        }
+        accumulatedChars += segment.text.length
       }
       
       if (currentSegmentId !== currentSimplifiedSegment.value) {
@@ -2853,14 +3750,39 @@ onMounted(() => {
   // 加载阅读器设置
   appStore.loadReaderSettings()
   
+  // 从processingSettings恢复相关设置
+  const processingSettings = currentDocument.value.processingSettings
+  if (processingSettings) {
+    console.log('从processingSettings恢复设置:', processingSettings)
+    // 恢复enableMainContent设置
+    if (processingSettings.enableMainContent !== undefined) {
+      appStore.updateReaderSettings({ enableMainContent: processingSettings.enableMainContent })
+    }
+    // 恢复enableChunk设置
+    if (processingSettings.enableChunk !== undefined) {
+      appStore.updateReaderSettings({ enableChunk: processingSettings.enableChunk })
+    }
+    // 恢复enableSimplify设置
+    if (processingSettings.enableSimplify !== undefined) {
+      appStore.updateReaderSettings({ enableSimplify: processingSettings.enableSimplify })
+    }
+    // 恢复posTagging设置
+    if (processingSettings.posTagging !== undefined) {
+      appStore.updateReaderSettings({ posTagging: processingSettings.posTagging })
+    }
+  }
+  
   // 添加调试日志：检查词性标注数据
   console.log('=== 阅读器初始化 ===')
   console.log('当前文档ID:', currentDocument.value.id)
+  console.log('segments:', currentDocument.value.segments)
+  console.log('segments第一个元素:', currentDocument.value.segments?.[0])
   console.log('pos_tags:', currentDocument.value.pos_tags)
   console.log('pos_tags 长度:', currentDocument.value.pos_tags?.length || 0)
   console.log('simplified_pos_tags:', currentDocument.value.simplified_pos_tags)
   console.log('simplified_pos_tags 长度:', currentDocument.value.simplified_pos_tags?.length || 0)
   console.log('posTagging 设置:', readerSettings.value.posTagging)
+  console.log('enableMainContent 设置:', readerSettings.value.enableMainContent)
   
   // 如果没有文档内容，显示提示
   if (!currentDocument.value.content) {
@@ -3234,6 +4156,27 @@ body {
   word-wrap: break-word !important;
   max-width: 100% !important;
   box-sizing: border-box !important;
+}
+
+/* 纯文本内容样式（未处理文档） */
+.plain-text-content {
+  width: 100%;
+  min-height: 300px;
+  padding: 1rem;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: break-word;
+}
+
+/* 空内容样式 */
+.empty-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  color: #999;
+  text-align: center;
 }
 
 /* 蒙版样式 */

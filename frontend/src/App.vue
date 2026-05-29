@@ -21,9 +21,10 @@
             </span>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="settings">个人设置</el-dropdown-item>
-                <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
-              </el-dropdown-menu>
+              <el-dropdown-item command="settings">个人设置</el-dropdown-item>
+              <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+              <el-dropdown-item command="deleteAccount">注销账号</el-dropdown-item>
+            </el-dropdown-menu>
             </template>
           </el-dropdown>
         </template>
@@ -59,12 +60,17 @@ const goToRegister = () => {
   router.push('/register')
 }
 
-const handleCommand = (command) => {
+const handleCommand = async (command) => {
   if (command === 'settings') {
     router.push('/settings')
   } else if (command === 'logout') {
-    appStore.logout()
+    await appStore.logout()
     router.push('/editor')
+  } else if (command === 'deleteAccount') {
+    if (confirm('确定要永久注销账号吗？此操作将删除所有数据且不可恢复！')) {
+      await appStore.deleteAccount()
+      router.push('/login')
+    }
   }
 }
 

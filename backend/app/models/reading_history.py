@@ -17,32 +17,30 @@ class ReadingHistory(Base):
     存储完整的阅读会话数据，包括处理后的文本和意群划分
     """
     __tablename__ = "reading_histories"
+    __table_args__ = {'mysql_engine': 'InnoDB', 'mysql_charset': 'utf8mb4'}
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
     title = Column(String(255), nullable=False)
     
-    # 原始内容快照
+    # 原始内容快照（文件上传后经过数据清洗）
     content_snapshot = Column(LONGTEXT, nullable=False)
-    
-    # 预处理后的内容（去噪、规范化等）
-    processed_content_snapshot = Column(LONGTEXT, nullable=True)
     
     # 简化后的内容（通俗易懂版）
     simplified_content_snapshot = Column(LONGTEXT, nullable=True)
     
     # 意群划分数据
-    segments_snapshot = Column(JSON, nullable=True)  # 原始文本意群划分
-    simplified_segments_snapshot = Column(JSON, nullable=True)  # 简化文本意群划分
+    segments_snapshot = Column(JSON, nullable=True)
+    simplified_segments_snapshot = Column(JSON, nullable=True)
     
     # 词性标注数据
-    pos_tags_snapshot = Column(JSON, nullable=True)  # 原始文本词性标注
-    simplified_pos_tags_snapshot = Column(JSON, nullable=True)  # 简化文本词性标注
+    pos_tags_snapshot = Column(JSON, nullable=True)
+    simplified_pos_tags_snapshot = Column(JSON, nullable=True)
     
     # 主次内容区分数据
-    primary_content_snapshot = Column(JSON, nullable=True)  # 主要内容标记
-    secondary_content_snapshot = Column(JSON, nullable=True)  # 次要内容标记
+    primary_content_snapshot = Column(JSON, nullable=True)
+    secondary_content_snapshot = Column(JSON, nullable=True)
     
     # 处理设置快照
     processing_settings_snapshot = Column(JSON, nullable=True)

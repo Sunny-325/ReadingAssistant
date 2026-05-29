@@ -53,11 +53,11 @@ class OllamaModelManager(ModelManager):
         """
         try:
             endpoint = f"{self.api_url}/api/generate"
-            # 默认参数优化
+            # 使用配置文件中的参数，支持长文本处理
             default_kwargs = {
-                "max_length": 1024,  # 增加生成长度
-                "temperature": 0.3,
-                "top_p": 0.9,
+                "max_length": settings.MODEL_MAX_TOKENS,  # 从配置文件读取
+                "temperature": settings.MODEL_TEMPERATURE,  # 较低温度，保持输出稳定性
+                "top_p": settings.MODEL_TOP_P,  # nucleus sampling
                 "stop": ["\n\n"]
             }
             default_kwargs.update(kwargs)

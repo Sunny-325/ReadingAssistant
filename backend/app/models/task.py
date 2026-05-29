@@ -18,29 +18,29 @@ class TaskStatus(str, enum.Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
-    
-    @classmethod
-    def _missing_(cls, value):
-        # 处理大小写不匹配的情况
-        for member in cls:
-            if member.value == value.lower():
-                return member
-        return super()._missing_(value)
-
+    PAUSED = "paused"
 
 class Task(Base):
     """
     任务模型
     """
     __tablename__ = "tasks"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    group_id = Column(Integer, nullable=True)
+    group_index = Column(Integer, nullable=False, default=0)
+    total_groups = Column(Integer, nullable=False, default=1)
+    total_chunks = Column(Integer, nullable=False, default=0)
+    completed_chunks = Column(Integer, nullable=False, default=0)
+    is_continuable = Column(Boolean, nullable=False, default=False)
+    last_chunk_index = Column(Integer, nullable=False, default=-1)
     task_type = Column(String(50), nullable=False)
-    status = Column(Enum('pending', 'processing', 'completed', 'failed'), nullable=False, default='pending')
-    input_data = Column(Text, nullable=True)  # JSON格式存储
-    result_data = Column(LONGTEXT, nullable=True)  # JSON格式存储
+    status = Column(Enum(TaskStatus, values_callable=lambda obj: [e.value for e in obj]), 
+                    nullable=False, default=TaskStatus.PENDING)
+    input_data = Column(Text, nullable=True)
+    result_data = Column(LONGTEXT, nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

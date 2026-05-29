@@ -2,6 +2,58 @@
   <div class="settings-container">
     <h2>设置</h2>
     
+    <!-- 用户信息 -->
+    <el-divider>用户信息</el-divider>
+    
+    <el-form label-width="120px" class="user-info-form">
+      <!-- 当前用户名 -->
+      <el-form-item label="当前用户名">
+        <span class="setting-value">{{ user?.username }}</span>
+      </el-form-item>
+      
+      <!-- 修改用户名 -->
+      <el-form-item label="修改用户名">
+        <el-input 
+          v-model="userForm.newUsername" 
+          placeholder="输入新用户名"
+        />
+        <el-button type="primary" size="small" @click="handleUpdateUsername" :loading="updatingUsername">
+          修改
+        </el-button>
+      </el-form-item>
+      
+      <!-- 修改密码 -->
+      <el-form-item label="旧密码">
+        <el-input 
+          v-model="userForm.oldPassword" 
+          type="password"
+          placeholder="输入旧密码"
+        />
+      </el-form-item>
+      
+      <el-form-item label="新密码">
+        <el-input 
+          v-model="userForm.newPassword" 
+          type="password"
+          placeholder="输入新密码"
+        />
+      </el-form-item>
+      
+      <el-form-item label="确认新密码">
+        <el-input 
+          v-model="userForm.confirmPassword" 
+          type="password"
+          placeholder="再次输入新密码"
+        />
+        <el-button type="primary" size="small" @click="handleUpdatePassword" :loading="updatingPassword">
+          修改密码
+        </el-button>
+      </el-form-item>
+    </el-form>
+    
+    <!-- 阅读器设置 -->
+    <el-divider>阅读器设置</el-divider>
+    
     <el-form label-width="120px">
       <!-- 字体设置 -->
       <el-form-item label="字体">
@@ -220,8 +272,24 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAppStore } from '../stores/appStore'
 import { ElMessage } from 'element-plus'
+import { updateUsername, updatePassword } from '../utils/api'
 
 const appStore = useAppStore()
+
+// 用户信息
+const user = computed(() => appStore.user)
+
+// 用户表单
+const userForm = ref({
+  newUsername: '',
+  oldPassword: '',
+  newPassword: '',
+  confirmPassword: ''
+})
+
+// 加载状态
+const updatingUsername = ref(false)
+const updatingPassword = ref(false)
 
 // 快捷键列表
 const shortcuts = [
@@ -355,6 +423,65 @@ watch(() => localSettings.value.colorScheme, (newScheme) => {
   }
 })
 
+// 修改用户名
+const handleUpdateUsername = async () => {
+  if (!userForm.value.newUsername.trim()) {
+    ElMessage.error('请输入新用户名')
+    return
+  }
+  
+  if (userForm.value.newUsername === user.value?.username) {
+    ElMessage.warning('新用户名与当前用户名相同')
+    return
+  }
+  
+  updatingUsername.value = true
+  try {
+    await updateUsername(userForm.value.newUsername)
+    ElMessage.success('用户名修改成功')
+    // 更新本地用户信息
+    appStore.user = { ...appStore.user, username: userForm.value.newUsername }
+    // 清空输入
+    userForm.value.newUsername = ''
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '修改用户名失败')
+  } finally {
+    updatingUsername.value = false
+  }
+}
+
+// 修改密码
+const handleUpdatePassword = async () => {
+  if (!userForm.value.oldPassword) {
+    ElMessage.error('请输入旧密码')
+    return
+  }
+  
+  if (!userForm.value.newPassword) {
+    ElMessage.error('请输入新密码')
+    return
+  }
+  
+  if (userForm.value.newPassword !== userForm.value.confirmPassword) {
+    ElMessage.error('两次输入的密码不一致')
+    return
+  }
+  
+  updatingPassword.value = true
+  try {
+    await updatePassword(userForm.value.oldPassword, userForm.value.newPassword)
+    ElMessage.success('密码修改成功')
+    // 清空输入
+    userForm.value.oldPassword = ''
+    userForm.value.newPassword = ''
+    userForm.value.confirmPassword = ''
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '修改密码失败')
+  } finally {
+    updatingPassword.value = false
+  }
+}
+
 // 方法
 const saveSettings = () => {
   appStore.updateReaderSettings(localSettings.value)
@@ -397,52 +524,85 @@ const resetSettings = () => {
 
 // 生命周期
 onMounted(async () => {
-  // 加载阅读器设置
-  await appStore.loadReaderSettings()
+  // 加载阅读器设置（先从localStorage加载，再从后端同步）
+  const localStorageSettings = localStorage.getItem('readerSettings')
+  let initialSettings = {}
+  
+  // 优先使用localStorage中的设置
+  if (localStorageSettings) {
+    try {
+      initialSettings = JSON.parse(localStorageSettings)
+    } catch (e) {
+      console.error('解析localStorage设置失败:', e)
+    }
+  }
+  
+  // 从后端加载设置
+  try {
+    await appStore.loadReaderSettings()
+    // 合并后端设置，但不覆盖localStorage中的设置
+    const backendSettings = { ...appStore.readerSettings }
+    
+    // 只有当localStorage中没有对应设置时，才使用后端设置
+    for (const key of Object.keys(backendSettings)) {
+      if (initialSettings[key] === undefined) {
+        initialSettings[key] = backendSettings[key]
+      }
+    }
+  } catch (e) {
+    console.error('从后端加载设置失败:', e)
+    // 如果后端加载失败，继续使用localStorage中的设置
+  }
+  
   // 更新本地设置
-  localSettings.value = { ...appStore.readerSettings }
-  // 确保posColors存在
-  if (!localSettings.value.posColors) {
+  localSettings.value = { ...initialSettings }
+  
+  // 确保posColors存在（仅当未定义时）
+  if (typeof localSettings.value.posColors === 'undefined') {
     localSettings.value.posColors = { ...defaultPosColors }
   }
-  // 确保posFontSizes存在
-  if (!localSettings.value.posFontSizes) {
+  
+  // 确保posFontSizes存在（仅当未定义时）
+  if (typeof localSettings.value.posFontSizes === 'undefined') {
     localSettings.value.posFontSizes = {
       'n': 16, 'v': 16, 'a': 16, 'd': 16, 'p': 16, 'c': 16, 'u': 16, 'r': 16,
       'm': 16, 'q': 16, 't': 16, 's': 16, 'f': 16, 'b': 16, 'z': 16, 'e': 16,
       'y': 16, 'o': 16, 'h': 16, 'k': 16, 'x': 16, 'w': 16
     }
   }
-  // 确保selectedPosTags存在
-  if (!localSettings.value.selectedPosTags) {
+  
+  // 确保selectedPosTags存在（仅当未定义时）
+  if (typeof localSettings.value.selectedPosTags === 'undefined') {
     localSettings.value.selectedPosTags = ['n', 'v', 'a']
   }
-  // 确保其他必要字段存在
-  if (!localSettings.value.fontFamily) localSettings.value.fontFamily = 'Arial'
-  if (!localSettings.value.fontSize) localSettings.value.fontSize = 16
-  if (!localSettings.value.lineHeight) localSettings.value.lineHeight = 1.5
-  if (!localSettings.value.letterSpacing) localSettings.value.letterSpacing = 0
-  if (!localSettings.value.wordSpacing) localSettings.value.wordSpacing = 0
-  if (!localSettings.value.backgroundColor) localSettings.value.backgroundColor = '#ffffff'
-  if (!localSettings.value.textColor) localSettings.value.textColor = '#333333'
+  
+  // 确保其他必要字段存在（仅当未定义时）
+  if (typeof localSettings.value.fontFamily === 'undefined') localSettings.value.fontFamily = 'Arial'
+  if (typeof localSettings.value.fontSize === 'undefined') localSettings.value.fontSize = 16
+  if (typeof localSettings.value.lineHeight === 'undefined') localSettings.value.lineHeight = 1.5
+  if (typeof localSettings.value.letterSpacing === 'undefined') localSettings.value.letterSpacing = 0
+  if (typeof localSettings.value.wordSpacing === 'undefined') localSettings.value.wordSpacing = 0
+  if (typeof localSettings.value.backgroundColor === 'undefined') localSettings.value.backgroundColor = '#ffffff'
+  if (typeof localSettings.value.textColor === 'undefined') localSettings.value.textColor = '#333333'
+  
   // 确保TTS提供商不为browser（已删除）
-  if (!localSettings.value.ttsProvider || localSettings.value.ttsProvider === 'browser') {
+  if (typeof localSettings.value.ttsProvider === 'undefined' || localSettings.value.ttsProvider === 'browser') {
     localSettings.value.ttsProvider = 'pyttsx3'
   }
-  if (!localSettings.value.colorScheme) localSettings.value.colorScheme = 'default'
-  if (!localSettings.value.enableChunk) localSettings.value.enableChunk = true
-  if (!localSettings.value.chunkLevel) localSettings.value.chunkLevel = 2  // 1=轻度, 2=中度, 3=高度
-  if (!localSettings.value.enableMainContent) localSettings.value.enableMainContent = false
-  if (!localSettings.value.enableSimplify) localSettings.value.enableSimplify = false
-  if (!localSettings.value.posTagging) localSettings.value.posTagging = false
-  if (!localSettings.value.enableMask) localSettings.value.enableMask = false
-  if (!localSettings.value.maskLines) localSettings.value.maskLines = 3
-  if (!localSettings.value.maskOpacity) localSettings.value.maskOpacity = 0.7
-  if (!localSettings.value.typesettingMode) localSettings.value.typesettingMode = 'normal'
-  if (!localSettings.value.speechRate) localSettings.value.speechRate = 1.0
-  if (!localSettings.value.speechVolume) localSettings.value.speechVolume = 1.0
-  if (!localSettings.value.ttsProvider) localSettings.value.ttsProvider = 'pyttsx3'
-  if (!localSettings.value.selectedVoice) localSettings.value.selectedVoice = 'female'
+  
+  if (typeof localSettings.value.colorScheme === 'undefined') localSettings.value.colorScheme = 'default'
+  if (typeof localSettings.value.enableChunk === 'undefined') localSettings.value.enableChunk = true
+  if (typeof localSettings.value.chunkLevel === 'undefined') localSettings.value.chunkLevel = 2  // 1=轻度, 2=中度, 3=高度
+  if (typeof localSettings.value.enableMainContent === 'undefined') localSettings.value.enableMainContent = false
+  if (typeof localSettings.value.enableSimplify === 'undefined') localSettings.value.enableSimplify = false
+  if (typeof localSettings.value.posTagging === 'undefined') localSettings.value.posTagging = false
+  if (typeof localSettings.value.enableMask === 'undefined') localSettings.value.enableMask = false
+  if (typeof localSettings.value.maskLines === 'undefined') localSettings.value.maskLines = 3
+  if (typeof localSettings.value.maskOpacity === 'undefined') localSettings.value.maskOpacity = 0.7
+  if (typeof localSettings.value.typesettingMode === 'undefined') localSettings.value.typesettingMode = 'normal'
+  if (typeof localSettings.value.speechRate === 'undefined') localSettings.value.speechRate = 1.0
+  if (typeof localSettings.value.speechVolume === 'undefined') localSettings.value.speechVolume = 1.0
+  if (typeof localSettings.value.selectedVoice === 'undefined') localSettings.value.selectedVoice = 'female'
 })
 </script>
 
@@ -463,6 +623,15 @@ onMounted(async () => {
 
 .el-form {
   max-width: 600px;
+}
+
+.user-info-form {
+  margin-bottom: 1rem;
+}
+
+.setting-value {
+  color: #666;
+  font-size: 14px;
 }
 
 .el-checkbox-group {

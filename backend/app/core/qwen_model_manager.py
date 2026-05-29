@@ -40,8 +40,8 @@ class QwenModelManager(ModelManager):
         self.cache = {}
         self.max_cache_size = 100
         
-        # 重试配置
-        self.max_retries = 3
+        # 重试配置（从配置文件读取）
+        self.max_retries = settings.MODEL_RETRY_ATTEMPTS
         self.retry_delay = 1
         
         # 记录加载时间
@@ -56,17 +56,14 @@ class QwenModelManager(ModelManager):
         :param kwargs: 其他参数
         :return: 生成的文本
         """
-        # 检查缓存
-        cache_key = f"{prompt}_{str(kwargs)}"
-        if cache_key in self.cache:
-            logger.info("从缓存获取模型结果")
-            return self.cache[cache_key]
+        # 不使用缓存，每次都调用模型获取结果
+        # 保持每次处理文本都调用模型，尽管内容一样但是每次模型返回的结果可能不同
         
-        # 默认参数优化
+        # 使用配置文件中的参数，支持长文本处理
         default_kwargs = {
-            "max_tokens": 4096,  # 增加生成长度，从1024改为4096
-            "temperature": 0.3,
-            "top_p": 0.9
+            "max_tokens": settings.MODEL_MAX_TOKENS,  # 从配置文件读取
+            "temperature": settings.MODEL_TEMPERATURE,  # 较低温度，保持输出稳定性
+            "top_p": settings.MODEL_TOP_P  # nucleus sampling
         }
         default_kwargs.update(kwargs)
         
@@ -143,9 +140,7 @@ class QwenModelManager(ModelManager):
                     
                     logger.info(f"模型响应成功，生成文本长度: {len(generated_text)}字符")
                     
-                    # 缓存结果
-                    self._update_cache(cache_key, generated_text)
-                    
+                    # 不缓存模型结果，保持每次调用都获取新结果
                     return generated_text
                 else:
                     logger.error(f"API调用失败: {response.message}")

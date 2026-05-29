@@ -35,6 +35,7 @@ import { useRouter } from 'vue-router'
 import { login, getUserInfo } from '../utils/api'
 import { useAppStore } from '../stores/appStore'
 import { View, Hide } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 const router = useRouter()
 const appStore = useAppStore()
@@ -68,10 +69,12 @@ const handleLogin = async () => {
         // 登录成功后获取用户信息
         const userInfo = await getUserInfo()
         appStore.setUser(userInfo)
+        // 显示登录成功提示
+        ElMessage.success(response.message || '登录成功！')
         router.push('/')
       } catch (error) {
         console.error('登录失败:', error)
-        alert('登录失败，请检查用户名和密码')
+        ElMessage.error(error.response?.data?.detail || '登录失败，请检查用户名和密码')
       } finally {
         loading.value = false
       }

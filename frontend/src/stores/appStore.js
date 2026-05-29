@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { getSettings, saveSettings, getReadingHistory, addReadingHistory as addHistoryApi, updateReadingHistory as updateHistoryApi, clearReadingHistory as clearHistoryApi, deleteReadingHistory as deleteHistoryApi, getDocuments, saveDocument as saveDocumentApi, deleteDocument as deleteDocumentApi, updateDocument as updateDocumentApi } from '../utils/api'
+import { getSettings, saveSettings, getReadingHistory, addReadingHistory as addHistoryApi, updateReadingHistory as updateHistoryApi, clearReadingHistory as clearHistoryApi, deleteReadingHistory as deleteHistoryApi, getDocuments, saveDocument as saveDocumentApi, deleteDocument as deleteDocumentApi, updateDocument as updateDocumentApi, logout as logoutApi, deleteAccount as deleteAccountApi } from '../utils/api'
 
 // 辅助函数：解析JSON字符串，如果失败则返回默认值
 const parseJsonOrReturn = (jsonString, defaultValue = []) => {
@@ -142,13 +142,40 @@ export const useAppStore = defineStore('app', {
       // 加载用户的阅读历史
       this.loadReadingHistory()
     },
-    // 登出
-    logout() {
-      this.user = null
-      localStorage.removeItem('token')
-      // 清空历史记录
-      this.readingHistory = []
-      localStorage.removeItem('readingHistory')
+    // 登出（退出登录，保留账号）
+    async logout() {
+      try {
+        // 调用后端退出登录API
+        await logoutApi()
+      } catch (error) {
+        console.error('调用后端退出登录API失败:', error)
+        // 即使后端退出登录失败，仍然清除前端状态
+      } finally {
+        this.user = null
+        localStorage.removeItem('token')
+        // 清空历史记录
+        this.readingHistory = []
+        localStorage.removeItem('readingHistory')
+      }
+    },
+    // 注销账号（永久删除账号和所有数据）
+    async deleteAccount() {
+      try {
+        // 调用后端注销账号API
+        await deleteAccountApi()
+      } catch (error) {
+        console.error('调用后端注销账号API失败:', error)
+        throw error
+      } finally {
+        // 清除所有前端状态
+        this.user = null
+        localStorage.removeItem('token')
+        this.readingHistory = []
+        localStorage.removeItem('readingHistory')
+        this.documents = []
+        // 清除用户设置
+        localStorage.removeItem('readerSettings')
+      }
     },
     // 更新阅读器设置
     async updateReaderSettings(settings) {
@@ -199,7 +226,24 @@ export const useAppStore = defineStore('app', {
     },
     // 更新当前文档
     updateCurrentDocument(document) {
-      this.currentDocument = { ...this.currentDocument, ...document }
+      // 完全替换当前文档，避免旧数据残留
+      const defaultDocument = {
+        id: null,
+        title: '',
+        content: '',
+        processedContent: '',
+        simplifiedContent: '',
+        segments: [],
+        simplifiedSegments: [],
+        pos_tags: [],
+        simplified_pos_tags: [],
+        historyId: null,
+        fromDocumentRecord: false,
+        fromHistory: false,
+        enableMainContent: false,
+        enableChunk: true
+      }
+      this.currentDocument = { ...defaultDocument, ...document }
     },
     // 设置当前模式
     setCurrentMode(mode) {
@@ -450,10 +494,9 @@ export const useAppStore = defineStore('app', {
           }
           
           // 如果有新的处理结果，也同步到后端
-          if (history.processedContent || history.segments) {
+          if (history.content || history.segments) {
             console.log('同步处理结果到后端')
             if (history.content) updateData.content_snapshot = history.content
-            if (history.processedContent) updateData.processed_content_snapshot = history.processedContent
             if (history.simplifiedContent) updateData.simplified_content_snapshot = history.simplifiedContent
             if (history.segments) updateData.segments_snapshot = typeof history.segments === 'string' ? JSON.parse(history.segments) : history.segments
             if (history.simplifiedSegments) updateData.simplified_segments_snapshot = typeof history.simplifiedSegments === 'string' ? JSON.parse(history.simplifiedSegments) : history.simplifiedSegments
@@ -476,7 +519,7 @@ export const useAppStore = defineStore('app', {
         document_id: history.document_id,
         title: history.title || '未命名文档',
         content: contentSnapshot,
-        processedContent: history.processed_content_snapshot || history.processedContent,
+        processedContent: history.content_snapshot || history.content,
         simplifiedContent: history.simplified_content_snapshot || history.simplifiedContent,
         // 解析JSON字符串为对象
         segments: history.segments_snapshot ? parseJsonOrReturn(history.segments_snapshot) : (typeof history.segments === 'string' ? parseJsonOrReturn(history.segments) : history.segments || []),
@@ -501,7 +544,6 @@ export const useAppStore = defineStore('app', {
           title: history.title || '未命名文档',
           document_id: history.document_id,
           content_snapshot: contentSnapshot,
-          processed_content_snapshot: history.processed_content_snapshot || history.processedContent,
           simplified_content_snapshot: history.simplified_content_snapshot || history.simplifiedContent,
           // 检查segments是否已经是JSON字符串，如果是则直接使用，否则进行序列化
           segments_snapshot: history.segments_snapshot || (typeof history.segments === 'string' ? history.segments : JSON.stringify(history.segments || [])),
@@ -537,7 +579,7 @@ export const useAppStore = defineStore('app', {
           document_id: item.document_id,  // 添加文档ID
           title: item.title,
           content: item.content_snapshot,
-          processedContent: item.processed_content_snapshot,
+          processedContent: item.content_snapshot,
           simplifiedContent: item.simplified_content_snapshot,
           // 解析JSON字符串为对象
           segments: parseJsonOrReturn(item.segments_snapshot, []),

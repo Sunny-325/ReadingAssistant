@@ -191,12 +191,13 @@
           :http-request="handleFileUpload"
           :multiple="false"
           :before-upload="beforeUpload"
+          accept=".txt,.pdf,.doc,.docx,.epub"
         >
           <el-icon class="el-icon--upload"><Upload /></el-icon>
           <div class="el-upload__text">拖拽文件到此处，或 <em>点击上传</em></div>
           <template #tip>
             <div class="el-upload__tip">
-              支持上传 .txt, .pdf, .doc, .docx 文件
+              支持上传 .txt, .pdf, .doc, .docx, .epub 文件
             </div>
           </template>
         </el-upload>
@@ -315,6 +316,42 @@
           
           <div class="document-preview">
             {{ getContentPreview(document.content) }}
+          </div>
+          
+          <!-- 文档状态标签 -->
+          <div class="document-status">
+            <el-tag :type="getStatusType(getDocumentDisplayStatus(document))">
+              {{ getStatusText(getDocumentDisplayStatus(document)) }}
+            </el-tag>
+          </div>
+          
+          <!-- 处理进度显示 -->
+          <div v-if="shouldShowProgress(document)" class="processing-progress">
+            <div class="progress-info">
+              <span class="progress-text">
+                已处理: {{ getCompletedGroups(document) }} / {{ getTotalGroups(document) }} 组
+              </span>
+              <span class="progress-percent">
+                {{ getProgressPercent(document) }}%
+              </span>
+            </div>
+            <el-progress
+              :percentage="getProgressPercent(document)"
+              :stroke-width="6"
+              :show-text="false"
+            />
+            <div class="progress-actions">
+              <el-button
+                v-if="(document.status === 'paused' || (documentProcessingStatus[document.id] && documentProcessingStatus[document.id].status === 'paused')) &&
+                      ((documentProcessingStatus[document.id] && documentProcessingStatus[document.id].completed_groups < documentProcessingStatus[document.id].total_groups) ||
+                       (document.completed_groups < document.total_groups))"
+                size="small"
+                type="success"
+                @click.stop="handleContinueProcessing(document.id)"
+              >
+                <el-icon><VideoPlay /></el-icon> 继续处理
+              </el-button>
+            </div>
           </div>
           
           <div class="document-meta">
@@ -480,8 +517,8 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/appStore'
 import { ElMessageBox, ElMessage } from 'element-plus'
-import { Document, Delete, Edit, Right, Download, Plus, More, ArrowDown, ArrowRight, Search, Refresh } from '@element-plus/icons-vue'
-import { uploadFile } from '../utils/api'
+import { Document, Delete, Edit, Right, Download, Plus, More, ArrowDown, ArrowRight, Search, Refresh, VideoPlay, VideoPause } from '@element-plus/icons-vue'
+import { uploadFile, getDocumentProcessingStatus, pauseTask, continueGroupedTask } from '../utils/api'
 
 const router = useRouter()
 const appStore = useAppStore()
@@ -533,6 +570,186 @@ const previewContent = ref('')
 const previewDocumentTitle = ref('')
 const previewPages = ref([])
 const currentDocumentId = ref(null)
+
+// 文档处理状态管理
+const documentProcessingStatus = ref({}) // { documentId: { status, progressPercent, completedGroups, totalGroups, taskId, isContinuable } }
+
+// 获取文档处理状态
+const fetchDocumentProcessingStatus = async (documentId) => {
+  try {
+    const status = await getDocumentProcessingStatus(documentId)
+    documentProcessingStatus.value[documentId] = status
+    return status
+  } catch (error) {
+    console.error('获取文档处理状态失败:', error)
+    return null
+  }
+}
+
+// 获取文档的处理进度信息
+const getProcessingProgress = (documentId) => {
+  return documentProcessingStatus.value[documentId] || null
+}
+
+// 判断文档是否正在处理
+const isDocumentProcessing = (documentId) => {
+  const status = documentProcessingStatus.value[documentId]
+  return status && (status.status === 'processing' || status.task_status === 'processing')
+}
+
+// 判断文档是否可以继续处理（基于状态）
+const canContinueProcessing = (document) => {
+  // 可以继续处理的条件：状态为暂停且有分组信息且未完成
+  return document.status === 'paused' && 
+         document.total_groups && 
+         document.total_groups > 0 &&
+         (document.completed_groups || 0) < document.total_groups
+}
+
+// 判断是否显示进度条
+const shouldShowProgress = (document) => {
+  // 先从 documentProcessingStatus 中获取最新状态
+  const status = documentProcessingStatus.value[document.id]
+
+  // 如果有处理状态信息，使用它
+  if (status) {
+    return status.total_groups && status.total_groups > 0 && status.status !== 'completed'
+  }
+
+  // 否则使用文档对象本身的字段
+  return document.total_groups && document.total_groups > 0 && document.status !== 'completed'
+}
+
+// 获取已完成组数
+const getCompletedGroups = (document) => {
+  // 先从 documentProcessingStatus 中获取最新状态
+  const status = documentProcessingStatus.value[document.id]
+  
+  if (status && status.completed_groups !== undefined) {
+    return status.completed_groups
+  }
+  
+  // 否则使用文档对象本身的字段
+  return document.completed_groups || 0
+}
+
+// 获取总组数
+const getTotalGroups = (document) => {
+  // 先从 documentProcessingStatus 中获取最新状态
+  const status = documentProcessingStatus.value[document.id]
+  
+  if (status && status.total_groups !== undefined) {
+    return status.total_groups
+  }
+  
+  // 否则使用文档对象本身的字段
+  return document.total_groups || 0
+}
+
+// 获取进度百分比
+const getProgressPercent = (document) => {
+  // 先从 documentProcessingStatus 中获取最新状态
+  const status = documentProcessingStatus.value[document.id]
+
+  if (status) {
+    if (!status.total_groups || status.total_groups === 0) {
+      return 0
+    }
+    return Math.round((status.completed_groups || 0) / status.total_groups * 100)
+  }
+
+  // 否则使用文档对象本身的字段
+  if (!document.total_groups || document.total_groups === 0) {
+    return 0
+  }
+  return Math.round((document.completed_groups || 0) / document.total_groups * 100)
+}
+
+// 判断文档是否正在处理（简化版，直接从文档对象判断）
+const isProcessing = (document) => {
+  // 先从 documentProcessingStatus 中获取最新状态
+  const status = documentProcessingStatus.value[document.id]
+
+  if (status) {
+    return status.status === 'processing' || status.task_status === 'processing'
+  }
+
+  return document.status === 'processing'
+}
+
+// 继续处理文档
+const handleContinueProcessing = async (documentId) => {
+  try {
+    // 先获取文档的处理状态（确保有任务ID）
+    const status = await fetchDocumentProcessingStatus(documentId)
+    
+    if (!status || !status.processing_task_id) {
+      ElMessage.warning('该文档没有可继续处理的任务')
+      return
+    }
+    
+    // 立即显示"继续处理已启动"，不要等待API调用
+    ElMessage.success('继续处理已启动')
+    
+    // 立即更新本地状态为"处理中"
+    documentProcessingStatus.value[documentId] = {
+      ...status,
+      status: 'processing',
+      task_status: 'processing'
+    }
+    
+    const result = await continueGroupedTask(status.processing_task_id)
+    console.log('继续处理结果:', result)
+
+    // 获取文档对象用于打开阅读器
+    const document = documents.value.find(d => d.id === documentId)
+    
+    // 检查是否还有更多组需要处理
+    if (!result.has_more) {
+      // 立即刷新状态
+      await fetchDocumentProcessingStatus(documentId)
+      // 先获取历史记录再跳转到阅读器
+      if (document) {
+        await openDocument(document)
+      } else {
+        router.push('/reader')
+      }
+      return
+    }
+    
+    // 轮询任务进度
+    const checkProgress = async () => {
+      try {
+        const currentStatus = await fetchDocumentProcessingStatus(documentId)
+        console.log('处理进度:', currentStatus)
+        
+        // 如果文档状态变为completed，说明所有组都已处理完成
+        if (currentStatus.status === 'completed') {
+          // 先获取历史记录再跳转到阅读器
+          if (document) {
+            await openDocument(document)
+          } else {
+            router.push('/reader')
+          }
+          return
+        }
+        
+        // 如果仍在处理中，继续轮询
+        if (currentStatus.status === 'processing' || currentStatus.task_status === 'processing') {
+          setTimeout(checkProgress, 3000)
+        }
+      } catch (error) {
+        console.error('获取处理进度失败:', error)
+      }
+    }
+    
+    // 开始轮询
+    setTimeout(checkProgress, 2000)
+  } catch (error) {
+    console.error('继续处理失败:', error)
+    ElMessage.error('继续处理失败')
+  }
+}
 
 // 从store中获取文档列表
 const documents = computed(() => {
@@ -591,11 +808,60 @@ const handleCurrentChange = (current) => {
 
 const refreshDocuments = async () => {
   await appStore.loadDocuments()
+  
+  // 重新获取所有文档的处理状态
+  documentProcessingStatus.value = {}
+  for (const doc of appStore.documents) {
+    // 对所有文档都获取处理状态，确保状态正确
+    await fetchDocumentProcessingStatus(doc.id)
+  }
 }
 
 const getContentPreview = (content) => {
   if (!content) return ''
   return content.substring(0, 100) + (content.length > 100 ? '...' : '')
+}
+
+// 获取文档状态中文文本
+const getStatusText = (status) => {
+  const statusMap = {
+    'pending': '未处理',
+    'processing': '处理中',
+    'completed': '已完成',
+    'failed': '处理失败',
+    'paused': '已暂停'
+  }
+  return statusMap[status] || '未知状态'
+}
+
+// 获取文档状态标签类型
+const getStatusType = (status) => {
+  const typeMap = {
+    'pending': 'info',
+    'processing': 'warning',
+    'completed': 'success',
+    'failed': 'danger',
+    'paused': 'primary'
+  }
+  return typeMap[status] || 'default'
+}
+
+// 获取文档显示状态（优先使用文档状态）
+const getDocumentDisplayStatus = (document) => {
+  const status = documentProcessingStatus.value[document.id]
+  if (status) {
+    // 如果文档状态是 processing，直接显示"处理中"
+    if (status.status === 'processing') {
+      return 'processing'
+    }
+    // 如果任务正在处理中，也显示"处理中"
+    if (status.task_status === 'processing') {
+      return 'processing'
+    }
+    // 使用文档状态
+    return status.status || document.status
+  }
+  return document.status
 }
 
 const formatDate = (dateString) => {
@@ -644,6 +910,14 @@ const handleDocumentAction = (command) => {
 }
 
 const previewDocument = (document) => {
+  // 检查文档是否正在处理中
+  if (isDocumentProcessing(document.id)) {
+    import('element-plus').then(({ ElMessage }) => {
+      ElMessage.warning('该文档正在处理中，请稍候再预览')
+    })
+    return
+  }
+  
   previewDocumentTitle.value = document.title
   previewContent.value = document.content
   // 简单的分页处理，每500字一页
@@ -661,10 +935,44 @@ const openDocument = async (document) => {
   console.log('文档ID:', document.id)
   console.log('文档标题:', document.title)
   
+  // 检查文档是否正在处理中
+  if (isDocumentProcessing(document.id)) {
+    console.log('文档正在处理中，禁止打开')
+    import('element-plus').then(({ ElMessage }) => {
+      ElMessage.warning('该文档正在处理中，请稍候再打开阅读')
+    })
+    return
+  }
+  
   // 设置为阅读模式
   appStore.setCurrentMode('reading')
   
+  // 强制重置分页状态，确保新文档从头开始显示
+  appStore.updateReaderSettings({
+    currentPage: 1
+  })
+  
   try {
+    // 先获取文档的完整内容（文档列表中的content可能是截断的预览）
+    let fullDocumentContent = document.content
+    try {
+      const token = localStorage.getItem('token')
+      if (token) {
+        const response = await fetch(`/api/user/documents/${document.id}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        })
+        if (response.ok) {
+          const fullDoc = await response.json()
+          fullDocumentContent = fullDoc.content || document.content
+          console.log('获取到文档完整内容，长度:', fullDocumentContent.length)
+        }
+      }
+    } catch (error) {
+      console.log('获取完整文档内容失败，使用列表中的内容:', error)
+    }
+    
     // 先尝试获取文档的最新阅读历史
     let historyData = null
     try {
@@ -697,7 +1005,7 @@ const openDocument = async (document) => {
     const documentData = {
       id: document.id,
       title: historyData?.title || document.title,
-      content: historyData?.content_snapshot || document.content,
+      content: historyData?.content_snapshot || fullDocumentContent,
       historyId: historyData?.id || null,
       fromDocumentRecord: true,  // 标记从文档记录打开（阅读模式）
       fromHistory: false  // 不是从历史记录打开
@@ -705,7 +1013,7 @@ const openDocument = async (document) => {
     
     // 如果有阅读历史，使用处理后的数据
     if (historyData) {
-      documentData.processedContent = historyData.processed_content_snapshot || document.content
+      documentData.processedContent = historyData.content_snapshot || fullDocumentContent
       // 不加载简化文本相关数据，只加载原文本相关数据（从文档记录打开阅读）
       documentData.simplifiedContent = undefined
       documentData.simplifiedSegments = []
@@ -765,6 +1073,9 @@ const openDocument = async (document) => {
     console.log('simplified_pos_tags 长度:', documentData.simplified_pos_tags?.length || 0)
     appStore.updateCurrentDocument(documentData)
     
+    // 等待状态更新完成后再导航，确保阅读界面能获取到最新数据
+    await new Promise(resolve => setTimeout(resolve, 50))
+    
     console.log('=== 导航到阅读器 ===')
     router.push('/reader')
     
@@ -811,7 +1122,7 @@ const editDocument = async (documentId) => {
           if (result.data) {
             const history = result.data
             processedData = {
-              processedContent: history.processed_content_snapshot,
+              processedContent: history.content_snapshot,
               simplifiedContent: history.simplified_content_snapshot,
               segments: history.segments_snapshot || [],
               simplifiedSegments: history.simplified_segments_snapshot || [],
@@ -1083,7 +1394,7 @@ const uploadToGroup = (groupId) => {
   // 这里简化处理，直接触发上传
   const uploadInput = document.createElement('input')
   uploadInput.type = 'file'
-  uploadInput.accept = '.txt,.pdf,.doc,.docx'
+  uploadInput.accept = '.txt,.pdf,.doc,.docx,.epub'
   uploadInput.onchange = (e) => {
     const file = e.target.files[0]
     if (file) {
@@ -1202,9 +1513,7 @@ const handleFileUpload = async (file) => {
       title: filenameWithoutExt,
       source_type: 'file_upload',
       group_id: file.groupId, // 添加上传文件的分组ID
-      original_filename: file.file.name,
       file_type: file.file.name.split('.').pop().toLowerCase(),
-      file_size: file.file.size,
       content: uploadResult.content
     }
     console.log('准备创建文档:', documentData)
@@ -1221,14 +1530,14 @@ const handleFileUpload = async (file) => {
 }
 
 const beforeUpload = (file) => {
-  const allowedTypes = ['text/plain', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
-  const allowedExtensions = ['.txt', '.pdf', '.doc', '.docx']
+  const allowedTypes = ['text/plain', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/epub+zip']
+  const allowedExtensions = ['.txt', '.pdf', '.doc', '.docx', '.epub']
   
   const isTypeAllowed = allowedTypes.includes(file.type)
   const isExtensionAllowed = allowedExtensions.some(ext => file.name.toLowerCase().endsWith(ext))
   
   if (!isTypeAllowed && !isExtensionAllowed) {
-    ElMessage.error('只支持上传 .txt, .pdf, .doc, .docx 文件')
+    ElMessage.error('只支持上传 .txt, .pdf, .doc, .docx, .epub 文件')
     return false
   }
   
@@ -1236,11 +1545,19 @@ const beforeUpload = (file) => {
 }
 
 // 生命周期
-onMounted(() => {
+onMounted(async () => {
   // 检查用户登录状态
   if (appStore.user) {
     // 每次加载页面都重新加载文档列表，确保数据最新
-    appStore.loadDocuments()
+    await appStore.loadDocuments()
+    
+    // 获取所有文档的处理状态（包括暂停状态的文档）
+    for (const doc of appStore.documents) {
+      // 获取所有非 completed 状态的文档的处理进度
+      if (doc.status !== 'completed') {
+        await fetchDocumentProcessingStatus(doc.id)
+      }
+    }
   } else {
     // 未登录用户，清空文档列表
     appStore.documents = []
@@ -1568,6 +1885,48 @@ onMounted(() => {
   margin-bottom: 15px;
   font-size: 12px;
   color: #909399;
+}
+
+/* 文档状态样式 */
+.document-status {
+  margin-bottom: 10px;
+}
+
+.document-status .el-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+/* 处理进度样式 */
+.processing-progress {
+  background-color: #f5f7fa;
+  border-radius: 4px;
+  padding: 10px;
+  margin-bottom: 15px;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.progress-text {
+  color: #606266;
+}
+
+.progress-percent {
+  color: #409eff;
+  font-weight: 500;
+}
+
+.progress-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .file-type {
